@@ -1,0 +1,30 @@
+# Claude Code / skills
+.claude/
+
+# Markdown docs (keep README only)
+*.md
+!README.md
+!**/README.md
+
+# Go build artifacts
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,33 @@
+services:
+  backend:
+    build: .
+    container_name: catice-backend
+    ports:
+      - "8080:8080" # frontend (Vite :5173) proxy มาที่ localhost:8080 ได้เลย
+    environment:
+      # DSN ของ Postgres (host = ชื่อ service "db" ใน network เดียวกัน)
+      DATABASE_URL: postgres://catice:catice@db:5432/catice?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy # รอ db พร้อมรับ connection ก่อน backend ขึ้น
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: catice-db
+    environment:
+      POSTGRES_USER: catice
+      POSTGRES_PASSWORD: catice
+      POSTGRES_DB: catice
+    volumes:
+      - catice-pgdata:/var/lib/postgresql/data # ⭐ volume ถาวร — restart/redeploy แล้ว user ไม่หาย
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catice -d catice"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+# named volume เก็บข้อมูล Postgres (docker จัดการ lifecycle ให้ — ลบด้วย `docker compose down -v`)
+volumes:
+  catice-pgdata:

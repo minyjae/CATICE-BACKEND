@@ -1,0 +1,7 @@
+.git
+docs
+*.md
+tmp
+.claude
+# web/ เก็บไว้ (เป็น frontend ที่ build แล้ว ให้ container เสิร์ฟตอน prod)
+# node_modules ไม่มีใน Catice2 (อยู่ใน catice-frontend ซึ่งเป็น sibling นอก build context)
