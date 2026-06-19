@@ -1,6 +1,6 @@
-// Package controller = ชั้น HTTP ของ auth (รับ request → เรียก service → เขียน response/cookie)
+// Package handler = ชั้น HTTP ของ auth (รับ request → เรียก service → เขียน response)
 // ไม่มี business logic เอง — มอบให้ service ทำ
-package controller
+package handler
 
 import (
 	"encoding/json"
@@ -12,21 +12,18 @@ import (
 	"github/minyjae/catice/internal/auth/service"
 )
 
-// CookieName คือชื่อ cookie ที่ใช้เก็บ session token (ServeWs ฝั่ง ws จะอ่านชื่อนี้)
-const CookieName = "session"
-
-// Handler รวม HTTP endpoint ของ auth (register/login/logout/me/users)
-type Handler struct {
-	store    *service.Store
-	sessions *service.Sessions
+// AuthHandler รวม HTTP endpoint ของ user/auth (register/login/logout/me/users)
+type AuthHandler struct {
+	store  *service.Store
+	tokens *service.Tokens
 }
 
-func NewHandler(store *service.Store, sessions *service.Sessions) *Handler {
-	return &Handler{store: store, sessions: sessions}
+func NewAuthHandler(store *service.Store, tokens *service.Tokens) *AuthHandler {
+	return &AuthHandler{store: store, tokens: tokens}
 }
 
 // Register : POST /register  body {email, role, password}
-func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -43,13 +40,12 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// สมัครเสร็จ login ให้เลย → ออก session + set cookie
-	h.setSession(w, u.ID)
-	writeJSON(w, http.StatusOK, domain.RegisterResponse{Message: "สมัครสำเร็จ"})
+	// สมัครเสร็จ login ให้เลย → ออก JWT คืนไปใน body
+	writeJSON(w, http.StatusOK, domain.RegisterResponse{Message: "สมัครสำเร็จ", Token: h.tokens.Create(u.ID)})
 }
 
 // Login : POST /login  body {email, password}
-func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -66,30 +62,38 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.setSession(w, u.ID)
-	writeJSON(w, http.StatusOK, domain.LoginResponse{Message: "เข้าสู่ระบบสำเร็จ", Role: u.Role})
+	writeJSON(w, http.StatusOK, domain.LoginResponse{Message: "เข้าสู่ระบบสำเร็จ", Role: u.Role, Token: h.tokens.Create(u.ID)})
 }
 
-// Logout : POST /logout — ลบ session + เคลียร์ cookie
-func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(CookieName); err == nil {
-		h.sessions.Destroy(c.Value)
-	}
-	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+// Logout : POST /logout — JWT เป็น stateless → server ไม่มี state ให้ลบ
+// การออกจากระบบจริง = ฝั่ง client ทิ้ง token ทิ้งเอง (ลบจาก localStorage ฯลฯ)
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, domain.LoginResponse{Message: "ออกจากระบบแล้ว"})
 }
 
-// UserIDFromRequest อ่าน cookie → userID (เอาไว้ให้ ServeWs ฝั่ง ws เรียกใช้)
-func (h *Handler) UserIDFromRequest(r *http.Request) (string, bool) {
-	c, err := r.Cookie(CookieName)
-	if err != nil {
+// UserIDFromRequest แกะ JWT จาก request → userID (เอาไว้ให้ ServeWs ฝั่ง ws เรียกใช้)
+func (h *AuthHandler) UserIDFromRequest(r *http.Request) (string, bool) {
+	token := tokenFromRequest(r)
+	if token == "" {
 		return "", false
 	}
-	return h.sessions.UserID(c.Value)
+	return h.tokens.UserID(token)
 }
 
-// UserFromRequest อ่าน cookie → User เต็ม ๆ (cookie → token → userID → user)
-func (h *Handler) UserFromRequest(r *http.Request) (domain.User, bool) {
+// tokenFromRequest ดึง JWT ออกจาก request
+//   - ปกติ: header "Authorization: Bearer <token>"
+//   - fallback: query "?token=<token>" — เผื่อ WebSocket ที่ตั้ง custom header ตอน handshake ไม่ได้
+func tokenFromRequest(r *http.Request) string {
+	if h := r.Header.Get("Authorization"); h != "" {
+		if t, ok := strings.CutPrefix(h, "Bearer "); ok {
+			return strings.TrimSpace(t)
+		}
+	}
+	return r.URL.Query().Get("token")
+}
+
+// UserFromRequest แกะ JWT → User เต็ม ๆ (token → userID → user)
+func (h *AuthHandler) UserFromRequest(r *http.Request) (domain.User, bool) {
 	uid, ok := h.UserIDFromRequest(r)
 	if !ok {
 		return domain.User{}, false
@@ -99,7 +103,7 @@ func (h *Handler) UserFromRequest(r *http.Request) (domain.User, bool) {
 
 // Me : GET /me — คืนข้อมูล user ที่ login อยู่ (frontend ใช้เช็คว่า login ไหม + เอา email/role)
 // ต้องอยู่หลัง RequireAuth → อ่าน User จาก context ได้เลย (PassHash มี json:"-" → ไม่หลุด)
-func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	u, _ := UserOf(r) // RequireAuth การันตีว่ามีแล้ว
 	writeJSON(w, http.StatusOK, u)
 }
@@ -107,7 +111,7 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 // Users : GET /users — รายชื่อ user ที่สมัครทั้งหมด (id + ชื่อย่อ + role)
 // frontend เอาไปทำ selector "มอบหมายให้ใคร" บน Kanban board
 // อยู่หลัง RequireAuth (ต้อง login ก่อน) — คืนเฉพาะข้อมูลที่ปลอดภัยจะให้คนอื่นเห็น
-func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) Users(w http.ResponseWriter, r *http.Request) {
 	users := h.store.ListUsers()
 	out := make([]domain.PublicUser, 0, len(users))
 	for _, u := range users {
@@ -117,20 +121,6 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------- helpers ----------
-
-// setSession ออก token ใหม่ → ฝังเป็น cookie
-func (h *Handler) setSession(w http.ResponseWriter, userID string) {
-	token := h.sessions.Create(userID)
-	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true, // JS อ่านไม่ได้ → กัน XSS ขโมย token
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   7 * 24 * 60 * 60, // อยู่ได้ 7 วัน
-		// Secure: true,            // ⚠️ เปิดตอน deploy ผ่าน https
-	})
-}
 
 // nameFromEmail ตัดส่วนหน้า "@" มาเป็นชื่อแสดงผล (เช่น becket@x.com → becket)
 func nameFromEmail(email string) string {

@@ -4,12 +4,13 @@ import (
 	"log"
 	"net/http"
 
-	"github/minyjae/catice/internal/auth/controller"
+	"gorm.io/gorm"
+
+	"github/minyjae/catice/internal/auth/handler"
 	"github/minyjae/catice/internal/auth/repository"
 	"github/minyjae/catice/internal/auth/service"
 	"github/minyjae/catice/internal/config"
 	"github/minyjae/catice/internal/hub"
-	"github/minyjae/catice/internal/kanban"
 	"github/minyjae/catice/internal/room"
 	"github/minyjae/catice/internal/router"
 )
@@ -17,26 +18,38 @@ import (
 func main() {
 	cfg := config.Load() // อ่านค่าตั้งจาก env (DATABASE_URL, ADDR)
 
-	// ประกอบชั้นต่าง ๆ เข้าด้วยกัน (dependency ไหลทางเดียว: router → hub/room/...)
-	h := hub.New()                 // ชั้น transport (การเชื่อมต่อ)
-	go h.Run()                     //
-	rm := room.NewManager()        // ชั้น state (ตำแหน่งผู้เล่น)
-	board := kanban.NewBoard()     // ชั้น state (kanban)
-	rt := router.New(h, rm, board) // ตัวสั่งการ: ดูด hub แล้ว dispatch
-	go rt.Run()                    //
+	// ---- ชั้นข้อมูล: Postgres (GORM) — ต้องมี DATABASE_URL เสมอ (ไม่มี in-memory fallback) ----
+	db := mustDB(cfg)
+	usersRepo, err := repository.NewGormUsers(db)
+	if err != nil {
+		log.Fatalf("migrate ตาราง users ไม่ได้: %v", err)
+	}
+	tasksRepo, err := repository.NewGormTasks(db)
+	if err != nil {
+		log.Fatalf("migrate ตาราง tasks ไม่ได้: %v", err)
+	}
+	taskStore := service.NewTaskStore(tasksRepo) // task ทั้งหมดไปทาง WS (router) — ดู create/move/update/delete ใน message_router
 
-	// auth: repository → store(service) → handler(controller)
-	// เลือก repository ตาม config: มี DATABASE_URL → Postgres(GORM) ถาวร, ไม่มี → in-memory
-	authH := controller.NewHandler(service.NewStore(usersRepo(cfg)), service.NewSessions())
+	// ---- ชั้น transport/state (dependency ไหลทางเดียว: router → hub/room/...) ----
+	h := hub.New()                     // ชั้น transport (การเชื่อมต่อ)
+	go h.Run()                         //
+	rm := room.NewManager()            // ชั้น state (ตำแหน่งผู้เล่น)
+	rt := router.New(h, rm, taskStore) // ตัวสั่งการ: ดูด hub แล้ว dispatch; task ลง DB ผ่าน taskStore
+	go rt.Run()                        //
+
+	// ---- auth (handler) ----
+	authH := handler.NewAuthHandler(service.NewStore(usersRepo), service.NewTokens(cfg.JWTSecret))
 	http.HandleFunc("/register", authH.Register)
 	http.HandleFunc("/login", authH.Login)
 	http.HandleFunc("/logout", authH.Logout)
-	http.HandleFunc("/me", authH.RequireAuth(authH.Me))       // ต้อง login ก่อน (middleware เช็ค cookie)
+	http.HandleFunc("/me", authH.RequireAuth(authH.Me))       // ต้อง login ก่อน (middleware เช็ค JWT)
 	http.HandleFunc("/users", authH.RequireAuth(authH.Users)) // รายชื่อ user ทั้งหมด → selector มอบหมาย task
+	// task: สร้าง/ย้าย/แก้/ลบ ทั้งหมดไปทาง WS (/ws) → realtime + บันทึกลง DB (ดู internal/router/message_router.go)
 
-	// route /ws → เช็ค cookie (ต้อง login ก่อน) → upgrade → register เข้า hub
+	// route /ws → เช็ค JWT (ต้อง login ก่อน) → upgrade → register เข้า hub
+	// browser ตั้ง header บน WebSocket handshake ไม่ได้ → ส่ง token ผ่าน query: /ws?token=<jwt>
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		userID, ok := authH.UserIDFromRequest(r) // แกะ cookie → userID
+		userID, ok := authH.UserIDFromRequest(r) // แกะ JWT → userID
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -58,22 +71,16 @@ func main() {
 	}
 }
 
-// usersRepo เลือกที่เก็บ user ตาม config:
-//   - มี DATABASE_URL → Postgres ผ่าน GORM (ถาวร, รอด restart ผ่าน volume)
-//   - ไม่มี           → in-memory (สะดวกตอน dev/test — restart แล้วหาย)
-func usersRepo(cfg config.Config) repository.UsersRepository {
+// mustDB เปิดการเชื่อมต่อ Postgres (GORM) — บังคับต้องมี DATABASE_URL
+// ไม่มี/เชื่อมไม่ได้ → fatal (เลิก in-memory fallback แล้ว ข้อมูล user/task ต้องถาวร)
+func mustDB(cfg config.Config) *gorm.DB {
 	if cfg.DatabaseURL == "" {
-		log.Println("DATABASE_URL ว่าง → ใช้ user store แบบ in-memory (restart แล้วข้อมูลหาย)")
-		return repository.NewMemUsers()
+		log.Fatal("ต้องตั้ง DATABASE_URL (ไม่มี in-memory fallback แล้ว)")
 	}
 	db, err := config.NewGormDB(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("เชื่อมต่อ Postgres ไม่ได้: %v", err)
 	}
-	repo, err := repository.NewGormUsers(db)
-	if err != nil {
-		log.Fatalf("migrate ตาราง users ไม่ได้: %v", err)
-	}
-	log.Println("ใช้ Postgres (GORM) เก็บ user — ถาวร")
-	return repo
+	log.Println("ใช้ Postgres (GORM) เก็บ user/task — ถาวร")
+	return db
 }

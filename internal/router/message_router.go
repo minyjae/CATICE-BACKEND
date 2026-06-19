@@ -7,9 +7,10 @@ import (
 	"encoding/json"
 	"math/rand"
 
+	"github/minyjae/catice/internal/auth/domain"
+	"github/minyjae/catice/internal/auth/service"
 	"github/minyjae/catice/internal/hub"
 	"github/minyjae/catice/internal/id"
-	"github/minyjae/catice/internal/kanban"
 	"github/minyjae/catice/internal/protocol"
 	"github/minyjae/catice/internal/room"
 	"github/minyjae/catice/internal/signaling"
@@ -18,11 +19,11 @@ import (
 type Router struct {
 	hub   *hub.Hub
 	rooms *room.Manager
-	board *kanban.Board
+	tasks *service.TaskStore // task ลง DB ผ่าน service เดียวกับ REST → WS/REST เห็นชุดเดียวกัน
 }
 
-func New(h *hub.Hub, rm *room.Manager, board *kanban.Board) *Router {
-	return &Router{hub: h, rooms: rm, board: board}
+func New(h *hub.Hub, rm *room.Manager, tasks *service.TaskStore) *Router {
+	return &Router{hub: h, rooms: rm, tasks: tasks}
 }
 
 // Run วนรับ 2 อย่างจาก hub: เหตุการณ์เข้า/ออก และข้อความจาก client
@@ -71,8 +72,8 @@ func (rt *Router) handleEvent(ev hub.Event) {
 			}
 		}
 
-		// snapshot task ทั้งหมดบนบอร์ด → คนใหม่ (ส่งเป็น task_create, frontend upsert ตาม id)
-		for _, t := range rt.board.Tasks() {
+		// snapshot task ทั้งหมดจาก DB → คนใหม่ (ส่งเป็น task_create, frontend upsert ตาม id)
+		for _, t := range rt.tasks.List() {
 			if out, err := protocol.NewEnvelope(protocol.TypeTaskCreate, t); err == nil {
 				rt.hub.SendTo(ev.Room, ev.ClientID, out)
 			}
@@ -147,8 +148,13 @@ func (rt *Router) handleMessage(in hub.Inbound) {
 		if json.Unmarshal(env.Payload, &p) != nil {
 			return
 		}
-		// createdBy = ผู้ส่ง (จาก auth/cookie) ไม่เชื่อ client; server แจก id + status ใน CreateTask
-		task := rt.board.CreateTask(p.Title, p.Detail, in.ClientID, p.AssignTo)
+		// createdBy = ผู้ส่ง (จาก auth/JWT) ไม่เชื่อ client; service แจก id + status "todo" + บันทึกลง DB
+		task, err := rt.tasks.Create(in.ClientID, domain.CreateTaskPayload{
+			Title: p.Title, Detail: p.Detail, AssignTo: p.AssignTo,
+		})
+		if err != nil {
+			return
+		}
 		if out, err := protocol.NewEnvelope(protocol.TypeTaskCreate, task); err == nil {
 			rt.hub.Broadcast(in.Room, out)
 		}
@@ -158,7 +164,7 @@ func (rt *Router) handleMessage(in hub.Inbound) {
 		if json.Unmarshal(env.Payload, &p) != nil {
 			return
 		}
-		if task, ok := rt.board.MoveTask(p.ID, p.Status); ok {
+		if task, ok := rt.tasks.Move(p.ID, domain.Status(p.Status)); ok {
 			if out, err := protocol.NewEnvelope(protocol.TypeTaskMove, task); err == nil {
 				rt.hub.Broadcast(in.Room, out)
 			}
@@ -169,7 +175,7 @@ func (rt *Router) handleMessage(in hub.Inbound) {
 		if json.Unmarshal(env.Payload, &p) != nil {
 			return
 		}
-		if task, ok := rt.board.UpdateTask(p.ID, p.Title, p.Detail, p.AssignTo); ok {
+		if task, ok := rt.tasks.Update(p.ID, p.Title, p.Detail, p.AssignTo); ok {
 			if out, err := protocol.NewEnvelope(protocol.TypeTaskUpdate, task); err == nil {
 				rt.hub.Broadcast(in.Room, out)
 			}
@@ -180,7 +186,7 @@ func (rt *Router) handleMessage(in hub.Inbound) {
 		if json.Unmarshal(env.Payload, &p) != nil {
 			return
 		}
-		rt.board.DeleteTask(p.ID)
+		rt.tasks.Delete(p.ID)
 		if out, err := protocol.NewEnvelope(protocol.TypeTaskDelete, p); err == nil {
 			rt.hub.Broadcast(in.Room, out)
 		}

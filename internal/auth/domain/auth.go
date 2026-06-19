@@ -1,4 +1,4 @@
-// Package domain เก็บ "แก่น" ของ auth: ตัวตนผู้ใช้ (User), ตำแหน่ง (Role) และ error กลาง
+// Package domain เก็บ "แก่น" ของ auth: ตัวตนผู้ใช้ (User), ตำแหน่ง (Role), task และ error กลาง
 // ไม่พึ่ง HTTP/DB/ORM ใด ๆ → เป็นชั้นในสุดที่ layer อื่นชี้เข้าหา (dependency ไหลเข้าหา domain)
 package domain
 
@@ -36,7 +36,7 @@ type User struct {
 	PassHash string `json:"-"`
 }
 
-// errors ที่ register/login อาจคืน — อยู่ใน domain เพื่อให้ทุก layer (repository/service/controller)
+// errors ที่ register/login อาจคืน — อยู่ใน domain เพื่อให้ทุก layer (repository/service/handler)
 // อ้างถึงตัวเดียวกันผ่าน errors.Is ได้ (เช่น gorm repo แปลง dup key → ErrEmailTaken)
 var (
 	ErrMissingFields  = errors.New("ต้องกรอก email และ password")

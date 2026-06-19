@@ -1,4 +1,4 @@
-package controller
+package handler
 
 import (
 	"context"
@@ -12,11 +12,11 @@ type ctxKey int
 
 const userCtxKey ctxKey = 0
 
-// RequireAuth = middleware: เช็ค cookie → ถ้า login แล้ว ฝัง User ลง context แล้วเรียก handler ถัดไป
+// RequireAuth = middleware: เช็ค JWT → ถ้า login แล้ว ฝัง User ลง context แล้วเรียก handler ถัดไป
 // ถ้ายังไม่ login → ตอบ 401 เลย (handler ปลายทางไม่ต้องเช็คซ้ำ)
 //
 // ใช้: http.HandleFunc("/me", authH.RequireAuth(authH.Me))
-func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
+func (h *AuthHandler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := h.UserFromRequest(r)
 		if !ok {

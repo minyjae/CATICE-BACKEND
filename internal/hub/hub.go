@@ -139,8 +139,8 @@ var upgrader = websocket.Upgrader{
 
 // ServeWs จัดการ request /ws: upgrade → สร้าง Client → register → start pumps
 //
-// userID มาจาก auth (main แกะ cookie แล้วยื่นให้) → ใช้เป็น client.id คงที่
-// → refresh แล้ว id ไม่เปลี่ยน (hub ไม่ต้องรู้จัก auth/cookie เลย แค่รับ id ที่ยืนยันแล้ว)
+// userID มาจาก auth (main แกะ JWT แล้วยื่นให้) → ใช้เป็น client.id คงที่
+// → refresh แล้ว id ไม่เปลี่ยน (hub ไม่ต้องรู้จัก auth/JWT เลย แค่รับ id ที่ยืนยันแล้ว)
 func ServeWs(h *Hub, w http.ResponseWriter, r *http.Request, userID string) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
