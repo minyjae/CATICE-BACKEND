@@ -11,6 +11,9 @@ type Config struct {
 	DatabaseURL string
 	// Addr : ที่อยู่ที่ server ฟัง (ดีฟอลต์ :8080)
 	Addr string
+	// JWTSecret : กุญแจลับสำหรับเซ็น/ตรวจ JWT (HS256)
+	// ⚠️ production ต้องตั้งผ่าน env ให้เป็นค่าสุ่มยาว ๆ และเก็บเป็นความลับ
+	JWTSecret string
 }
 
 // Load อ่าน env → Config (มี default ให้ค่าที่ไม่ตั้ง)
@@ -18,6 +21,7 @@ func Load() Config {
 	return Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		Addr:        getenv("ADDR", ":8080"),
+		JWTSecret:   getenv("JWT_SECRET", "dev-secret-change-me"),
 	}
 }
 

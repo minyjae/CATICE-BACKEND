@@ -7,6 +7,8 @@ services:
     environment:
       # DSN ของ Postgres (host = ชื่อ service "db" ใน network เดียวกัน)
       DATABASE_URL: postgres://catice:catice@db:5432/catice?sslmode=disable
+      # กุญแจลับเซ็น JWT — ⚠️ production ต้องเปลี่ยนเป็นค่าสุ่มยาว ๆ (เช่นผ่าน .env / secret manager)
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
     depends_on:
       db:
         condition: service_healthy # รอ db พร้อมรับ connection ก่อน backend ขึ้น
