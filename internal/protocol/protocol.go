@@ -13,6 +13,7 @@ const (
 	TypeLeave      MessageType = "leave"   // ผู้เล่นออกจากห้อง (ปกติ server เป็นคนสร้าง)
 	TypeWelcome    MessageType = "welcome" // server บอก client ว่า "id ของคุณคืออะไร" ทันทีที่ต่อ
 	TypeSignal     MessageType = "signal"  // WebRTC signaling — ส่งต่อระหว่าง peer 2 คนแบบเจาะจง
+	TypeSwitchRoom MessageType = "switch_room" // client ขอย้ายห้องบน connection เดิม (ไม่ reconnect)
 	TypeObject     MessageType = "object"
 	TypeTaskCreate MessageType = "task_create"
 	TypeTaskMove   MessageType = "task_move"
@@ -36,6 +37,13 @@ type Envelope struct {
 // JoinPayload : ข้อมูลตอนเข้าห้อง
 type JoinPayload struct {
 	Name string `json:"name"`
+}
+
+// SwitchRoomPayload : client ขอย้ายไปห้องใหม่บน connection เดิม
+// server ย้าย membership (Left ห้องเก่า + Joined ห้องใหม่) แล้วกู้ตำแหน่งห้องใหม่จาก Redis
+// → หลังได้ welcome ห้องใหม่ frontend ส่ง join (ชื่อ) ซ้ำเหมือนตอนต่อครั้งแรก
+type SwitchRoomPayload struct {
+	Room string `json:"room"`
 }
 
 // MovePayload : ตำแหน่งใหม่ของผู้เล่น (พิกัดบน grid)
@@ -64,9 +72,13 @@ type ChatBroadcast struct {
 
 // WelcomePayload : server ส่งให้ client ทันทีที่ต่อ เพื่อบอก id ที่ถูกแจกให้
 // frontend ใช้ id นี้แยกว่า "ตัวไหนคือเรา" (เช่น ไฮไลต์ตัวเอง / ส่ง move ของเรา)
+// X,Y = ตำแหน่ง spawn ที่ server กำหนดให้ (กู้จาก Redis ถ้าเคยเล่น, ไม่งั้นสุ่ม)
+// → client เกิดที่ตำแหน่งเดิมหลัง refresh/reconnect แทนที่จะ spawn ใหม่ทุกครั้ง
 type WelcomePayload struct {
 	ID   string `json:"id"`
 	Room string `json:"room"`
+	X    int    `json:"x"`
+	Y    int    `json:"y"`
 }
 
 type TaskCreatePayload struct {

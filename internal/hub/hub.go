@@ -40,6 +40,13 @@ type outbound struct {
 	data []byte
 }
 
+// switchReq = คำขอย้ายห้องของ client คนหนึ่ง (จาก room → newRoom)
+type switchReq struct {
+	room    string
+	id      string
+	newRoom string
+}
+
 type Hub struct {
 	rooms      map[string]map[*Client]bool
 	register   chan *Client
@@ -47,6 +54,7 @@ type Hub struct {
 	out        chan outbound
 	incoming   chan Inbound
 	events     chan Event
+	switchCh   chan switchReq
 }
 
 // New สร้าง Hub — channel incoming/events/out ใช้ buffer เพื่อกัน deadlock
@@ -59,6 +67,7 @@ func New() *Hub {
 		out:        make(chan outbound, 1024),
 		incoming:   make(chan Inbound, 256),
 		events:     make(chan Event, 64),
+		switchCh:   make(chan switchReq, 64),
 	}
 }
 
@@ -77,6 +86,12 @@ func (h *Hub) Broadcast(room string, data []byte) {
 // SendTo ส่งให้คนเดียวเจาะจง (ตาม id) ในห้อง
 func (h *Hub) SendTo(room, id string, data []byte) {
 	h.out <- outbound{room: room, id: id, data: data}
+}
+
+// SwitchRoom ย้าย client (id) จากห้อง room → newRoom บน connection เดิม
+// hub จะยิง Left (ห้องเก่า) + Joined (ห้องใหม่) → router ทำ broadcast/กู้ตำแหน่งต่อเอง
+func (h *Hub) SwitchRoom(room, id, newRoom string) {
+	h.switchCh <- switchReq{room: room, id: id, newRoom: newRoom}
 }
 
 // Run คือ loop หลัก (goroutine เดียวที่แตะ rooms → ไม่ต้อง lock)
@@ -126,6 +141,43 @@ func (h *Hub) Run() {
 					}
 				}
 			}
+
+		case sw := <-h.switchCh:
+			if sw.newRoom == "" || sw.newRoom == sw.room {
+				continue // ห้องเดิม/ว่าง → ไม่ต้องทำ
+			}
+			// หา client ในห้องเก่า
+			var cl *Client
+			for c := range h.rooms[sw.room] {
+				if c.id == sw.id {
+					cl = c
+					break
+				}
+			}
+			if cl == nil {
+				continue // ไม่เจอ (อาจหลุดไปก่อน) → ข้าม
+			}
+
+			// 1) ออกจากห้องเก่า → ยิง Left ให้ router broadcast ให้คนในห้องเก่า
+			delete(h.rooms[sw.room], cl)
+			if len(h.rooms[sw.room]) == 0 {
+				delete(h.rooms, sw.room)
+			}
+			h.events <- Event{Kind: Left, ClientID: cl.id, Room: sw.room}
+
+			// 2) เข้าห้องใหม่ (เตะสายเก่า id เดียวกันที่อาจค้างในห้องใหม่ก่อน เหมือน register)
+			cl.setRoom(sw.newRoom)
+			if h.rooms[sw.newRoom] == nil {
+				h.rooms[sw.newRoom] = make(map[*Client]bool)
+			}
+			for old := range h.rooms[sw.newRoom] {
+				if old.id == cl.id {
+					delete(h.rooms[sw.newRoom], old)
+					close(old.send)
+				}
+			}
+			h.rooms[sw.newRoom][cl] = true
+			h.events <- Event{Kind: Joined, ClientID: cl.id, Room: sw.newRoom}
 		}
 	}
 }

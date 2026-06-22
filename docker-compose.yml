@@ -7,11 +7,16 @@ services:
     environment:
       # DSN ของ Postgres (host = ชื่อ service "db" ใน network เดียวกัน)
       DATABASE_URL: postgres://catice:catice@db:5432/catice?sslmode=disable
+      # Redis (host = ชื่อ service "redis" ใน network เดียวกัน)
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       # กุญแจลับเซ็น JWT — ⚠️ production ต้องเปลี่ยนเป็นค่าสุ่มยาว ๆ (เช่นผ่าน .env / secret manager)
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
     depends_on:
       db:
         condition: service_healthy # รอ db พร้อมรับ connection ก่อน backend ขึ้น
+      redis:
+        condition: service_healthy # รอ redis พร้อมรับ connection ก่อน backend ขึ้น
     restart: unless-stopped
 
   db:
@@ -30,6 +35,23 @@ services:
       retries: 10
     restart: unless-stopped
 
-# named volume เก็บข้อมูล Postgres (docker จัดการ lifecycle ให้ — ลบด้วย `docker compose down -v`)
+  redis:
+    image: redis:7-alpine
+    container_name: catice-redis
+    command: redis-server --save 60 1 --loglevel warning
+    # --save 60 1 = snapshot ลง disk ทุก 60 วิ ถ้ามีอย่างน้อย 1 key เปลี่ยน
+    # กัน position ล่าสุดหายหมดถ้า redis container restart กะทันหัน
+    # (ยังไม่ใช่ persistence ถาวรเท่า AOF แต่พอสำหรับ position cache)
+    volumes:
+      - catice-redisdata:/data # ⭐ volume ถาวร — กัน cache หายตอน restart
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+# named volume เก็บข้อมูล Postgres + Redis (docker จัดการ lifecycle ให้ — ลบด้วย `docker compose down -v`)
 volumes:
   catice-pgdata:
+  catice-redisdata:

@@ -11,19 +11,21 @@ import (
 	"github/minyjae/catice/internal/auth/service"
 	"github/minyjae/catice/internal/hub"
 	"github/minyjae/catice/internal/id"
+	"github/minyjae/catice/internal/presence"
 	"github/minyjae/catice/internal/protocol"
 	"github/minyjae/catice/internal/room"
 	"github/minyjae/catice/internal/signaling"
 )
 
 type Router struct {
-	hub   *hub.Hub
-	rooms *room.Manager
-	tasks *service.TaskStore // task ลง DB ผ่าน service เดียวกับ REST → WS/REST เห็นชุดเดียวกัน
+	hub       *hub.Hub
+	rooms     *room.Manager
+	tasks     *service.TaskStore // task ลง DB ผ่าน service เดียวกับ REST → WS/REST เห็นชุดเดียวกัน
+	positions presence.Store     // ตำแหน่ง client ถาวร (Redis) → reconnect/refresh/logout แล้วยืนที่เดิม
 }
 
-func New(h *hub.Hub, rm *room.Manager, tasks *service.TaskStore) *Router {
-	return &Router{hub: h, rooms: rm, tasks: tasks}
+func New(h *hub.Hub, rm *room.Manager, tasks *service.TaskStore, positions presence.Store) *Router {
+	return &Router{hub: h, rooms: rm, tasks: tasks, positions: positions}
 }
 
 // Run วนรับ 2 อย่างจาก hub: เหตุการณ์เข้า/ออก และข้อความจาก client
@@ -43,16 +45,24 @@ func (rt *Router) Run() {
 func (rt *Router) handleEvent(ev hub.Event) {
 	switch ev.Kind {
 	case hub.Joined:
-		// 1) สร้างตัวตนในเกม + สุ่มจุดเกิด — เฉพาะตอน "ยังไม่มี" เท่านั้น
+		// 1) สร้างตัวตนในเกม — เฉพาะตอน "ยังไม่มีใน memory" เท่านั้น
 		//    (ถ้า reconnect/เปิดสายใหม่ของ user เดิม → คงตำแหน่งเดิมไว้ ไม่ spawn ทับ)
 		if _, exists := rt.rooms.Get(ev.Room, ev.ClientID); !exists {
-			// สุ่มจุดเกิด — y เริ่มที่ 2 เพื่อไม่ให้เกิดทับผนังบน (2 แถวบนที่ client กันเดิน)
-			rt.rooms.Add(ev.Room, room.Player{ID: ev.ClientID, X: rand.Intn(10), Y: 2 + rand.Intn(8)})
+			// ลองกู้ตำแหน่งเดิมจาก Redis ก่อน (รอด refresh/logout/รีสตาร์ท server)
+			pl, ok := rt.positions.Load(ev.Room, ev.ClientID)
+			if !ok {
+				// ไม่เคยมี → สุ่มจุดเกิด (y เริ่มที่ 2 ไม่ให้เกิดทับผนังบน 2 แถวที่ client กันเดิน)
+				pl = room.Player{ID: ev.ClientID, X: rand.Intn(10), Y: 2 + rand.Intn(8)}
+			}
+			rt.rooms.Add(ev.Room, pl)
+			rt.positions.Save(ev.Room, pl) // เก็บไว้ (เผื่อ spawn ใหม่ ให้ถาวรตั้งแต่ครั้งแรก)
 		}
 
-		// 2) บอก client ว่า id ตัวเองคืออะไร (welcome)
+		// 2) บอก client ว่า id ตัวเองคืออะไร + ตำแหน่ง spawn (welcome)
+		//    me = ตำแหน่งที่เพิ่งกู้จาก Redis / สุ่มไว้ด้านบน → ส่งให้ client เกิดที่เดิม
+		me, _ := rt.rooms.Get(ev.Room, ev.ClientID)
 		if out, err := protocol.NewEnvelope(protocol.TypeWelcome, protocol.WelcomePayload{
-			ID: ev.ClientID, Room: ev.Room,
+			ID: ev.ClientID, Room: ev.Room, X: me.X, Y: me.Y,
 		}); err == nil {
 			rt.hub.SendTo(ev.Room, ev.ClientID, out)
 		}
@@ -110,6 +120,17 @@ func (rt *Router) handleMessage(in hub.Inbound) {
 			return
 		}
 		rt.updatePlayer(in.Room, in.ClientID, func(pl *room.Player) { pl.X = p.X; pl.Y = p.Y }, protocol.TypeMove)
+
+	case protocol.TypeSwitchRoom:
+		var p protocol.SwitchRoomPayload
+		if json.Unmarshal(env.Payload, &p) != nil {
+			return
+		}
+		if p.Room == "" || p.Room == in.Room {
+			return
+		}
+		// hub ย้าย membership → ยิง Left(ห้องเก่า)+Joined(ห้องใหม่) → handleEvent กู้ตำแหน่ง/sync ต่อเอง
+		rt.hub.SwitchRoom(in.Room, in.ClientID, p.Room)
 
 	case protocol.TypeChat:
 		var p protocol.ChatPayload
@@ -201,6 +222,7 @@ func (rt *Router) updatePlayer(roomName, id string, mutate func(*room.Player), t
 	}
 	mutate(&pl)
 	rt.rooms.Add(roomName, pl)
+	rt.positions.Save(roomName, pl) // write-through → ตำแหน่ง/ชื่อล่าสุดลง Redis (async ไม่หน่วง loop)
 
 	if out, err := protocol.NewEnvelope(typ, pl); err == nil {
 		rt.hub.Broadcast(roomName, out)
