@@ -18,6 +18,16 @@ type TaskRepository interface {
 	Create(t domain.Task) error         // insert ใหม่
 	Update(t domain.Task) error         // เซฟทับทั้งใบ (move/update อ่านของเดิมมาก่อนแล้วแก้)
 	Delete(id string) error             //
+	DeleteByBoard(boardID string) error // ลบ task ทั้งหมดของบอร์ด (cascade ตอนลบ board)
 	ByID(id string) (domain.Task, bool) // อ่าน task เดิมมาก่อนแก้ (move/update)
 	All() []domain.Task
+}
+
+// BoardRepository = สัญญาของที่เก็บ board (impl อยู่ที่ board.go)
+type BoardRepository interface {
+	Create(b domain.Board) error
+	Update(b domain.Board) error
+	Delete(id string) error
+	ByID(id string) (domain.Board, bool)
+	All() []domain.Board
 }

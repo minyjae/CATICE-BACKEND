@@ -7,18 +7,25 @@ import "encoding/json"
 type MessageType string
 
 const (
-	TypeJoin       MessageType = "join"    // ผู้เล่นเข้ามาในห้อง (บอกชื่อ)
-	TypeMove       MessageType = "move"    // ผู้เล่นเคลื่อนที่ (บอกตำแหน่งใหม่)
-	TypeChat       MessageType = "chat"    // ผู้เล่นพิมพ์แชต
-	TypeLeave      MessageType = "leave"   // ผู้เล่นออกจากห้อง (ปกติ server เป็นคนสร้าง)
-	TypeWelcome    MessageType = "welcome" // server บอก client ว่า "id ของคุณคืออะไร" ทันทีที่ต่อ
-	TypeSignal     MessageType = "signal"  // WebRTC signaling — ส่งต่อระหว่าง peer 2 คนแบบเจาะจง
-	TypeSwitchRoom MessageType = "switch_room" // client ขอย้ายห้องบน connection เดิม (ไม่ reconnect)
-	TypeObject     MessageType = "object"
-	TypeTaskCreate MessageType = "task_create"
-	TypeTaskMove   MessageType = "task_move"
-	TypeTaskUpdate MessageType = "task_update"
-	TypeTaskDelete MessageType = "task_delete"
+	TypeJoin        MessageType = "join"        // ผู้เล่นเข้ามาในห้อง (บอกชื่อ)
+	TypeMove        MessageType = "move"        // ผู้เล่นเคลื่อนที่ (บอกตำแหน่งใหม่)
+	TypeChat        MessageType = "chat"        // ผู้เล่นพิมพ์แชต
+	TypeLeave       MessageType = "leave"       // ผู้เล่นออกจากห้อง (ปกติ server เป็นคนสร้าง)
+	TypeWelcome     MessageType = "welcome"     // server บอก client ว่า "id ของคุณคืออะไร" ทันทีที่ต่อ
+	TypeSignal      MessageType = "signal"      // WebRTC signaling — ส่งต่อระหว่าง peer 2 คนแบบเจาะจง
+	TypeCallInvite  MessageType = "call_invite" // ชวนเข้าสาย (relay unicast เหมือน signal)
+	TypeCallAccept  MessageType = "call_accept" // ตอบรับคำเชิญ
+	TypeCallReject  MessageType = "call_reject" // ปฏิเสธคำเชิญ
+	TypeCallCancel  MessageType = "call_cancel" // ผู้ชวนยกเลิกก่อนตอบ
+	TypeSwitchRoom  MessageType = "switch_room" // client ขอย้ายห้องบน connection เดิม (ไม่ reconnect)
+	TypeObject      MessageType = "object"
+	TypeBoardCreate MessageType = "board_create"
+	TypeBoardRename MessageType = "board_rename"
+	TypeBoardDelete MessageType = "board_delete"
+	TypeTaskCreate  MessageType = "task_create"
+	TypeTaskMove    MessageType = "task_move"
+	TypeTaskUpdate  MessageType = "task_update"
+	TypeTaskDelete  MessageType = "task_delete"
 )
 
 // Envelope คือ "ซองจดหมาย" ที่ห่อทุกข้อความ
@@ -52,9 +59,13 @@ type MovePayload struct {
 	Y int `json:"y"`
 }
 
-// ChatPayload : ข้อความแชต
+// ChatPayload : ข้อความแชตขาเข้า
+//   - Scope : "room" (ห้องนี้, ดีฟอลต์ถ้าว่าง) | "all" (ทั้งหมด) | "private" (ส่วนตัว)
+//   - To    : userId ปลายทาง (ใช้เฉพาะ scope="private")
 type ChatPayload struct {
-	Text string `json:"text"`
+	Scope string `json:"scope,omitempty"`
+	To    string `json:"to,omitempty"`
+	Text  string `json:"text"`
 }
 
 // LeavePayload : ใครออกจากห้อง (server ใส่ id ให้)
@@ -62,12 +73,15 @@ type LeavePayload struct {
 	ID string `json:"id"`
 }
 
-// ChatBroadcast : ข้อความแชตที่ server ส่งต่อให้ทุกคน
-// ต่างจาก ChatPayload (ขาเข้า มีแค่ text) ตรงที่ "ขาออก" ต้องบอกด้วยว่าใครพูด
+// ChatBroadcast : ข้อความแชตที่ server ส่งต่อ — "ขาออก" บอกด้วยว่าใครพูด + scope ไหน
+//   - frontend ใช้ Scope จัดเข้าแท็บถูก (ห้องนี้/ทั้งหมด/ส่วนตัว)
+//   - private: ID=ผู้ส่ง, To=ปลายทาง → คู่สนทนาคืออีกฝั่งของ (ID,To)
 type ChatBroadcast struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Text string `json:"text"`
+	Scope string `json:"scope"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	To    string `json:"to,omitempty"`
+	Text  string `json:"text"`
 }
 
 // WelcomePayload : server ส่งให้ client ทันทีที่ต่อ เพื่อบอก id ที่ถูกแจกให้
@@ -81,7 +95,21 @@ type WelcomePayload struct {
 	Y    int    `json:"y"`
 }
 
+// ----- board -----
+// board_create ขาเข้า: client ส่งแค่ name (server แจก id) / ขาออก: ส่ง domain.Board (มี id+name)
+type BoardCreatePayload struct {
+	Name string `json:"name"`
+}
+type BoardRenamePayload struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+type BoardDeletePayload struct {
+	ID string `json:"id"`
+}
+
 type TaskCreatePayload struct {
+	BoardID  string   `json:"board_id"` // task สร้างใต้บอร์ดไหน
 	Title    string   `json:"title"`
 	Detail   string   `json:"detail"`
 	AssignTo []string `json:"assign_to"`

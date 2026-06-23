@@ -43,6 +43,7 @@ type PublicUser struct {
 //   - createdBy ไม่อยู่ในนี้ → server เซ็ตจาก JWT เอง (ไม่เชื่อ client)
 //   - Status ว่างได้ → service จะตั้งดีฟอลต์ "todo" ให้
 type CreateTaskPayload struct {
+	BoardID  string   `json:"board_id"` // task สร้างใต้บอร์ดไหน
 	Title    string   `json:"title"`
 	Detail   string   `json:"detail"`
 	Status   Status   `json:"status"`
