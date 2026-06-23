@@ -11,3 +11,13 @@ type Signal struct {
 	From string          `json:"from"`
 	Data json.RawMessage `json:"data"`
 }
+
+// CallPayload คือข้อความคุมการเชิญสาย (call_invite/accept/reject/cancel)
+//   - To   : id ปลายทาง (client ใส่มา ตอนขาเข้า)
+//   - From : id ผู้ส่ง (server เติมให้ ตอนขาออก — ไม่เชื่อค่าจาก client)
+//
+// ไม่มี Data — เป็นแค่สัญญาณคุมสาย ตัว WebRTC จริงไปต่อผ่าน Signal
+type CallPayload struct {
+	To   string `json:"to,omitempty"`
+	From string `json:"from,omitempty"`
+}

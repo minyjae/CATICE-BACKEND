@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"time"
 
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
 	"github/minyjae/catice/internal/auth/handler"
@@ -11,6 +14,7 @@ import (
 	"github/minyjae/catice/internal/auth/service"
 	"github/minyjae/catice/internal/config"
 	"github/minyjae/catice/internal/hub"
+	"github/minyjae/catice/internal/presence"
 	"github/minyjae/catice/internal/room"
 	"github/minyjae/catice/internal/router"
 )
@@ -28,14 +32,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("migrate ตาราง tasks ไม่ได้: %v", err)
 	}
-	taskStore := service.NewTaskStore(tasksRepo) // task ทั้งหมดไปทาง WS (router) — ดู create/move/update/delete ใน message_router
+	boardsRepo, err := repository.NewGormBoards(db)
+	if err != nil {
+		log.Fatalf("migrate ตาราง boards ไม่ได้: %v", err)
+	}
+	taskStore := service.NewTaskStore(tasksRepo)    // task ทั้งหมดไปทาง WS (router) — ดู create/move/update/delete ใน message_router
+	boardStore := service.NewBoardStore(boardsRepo) // board (kanban หลายใบ) ผ่าน WS เช่นกัน
+	positions := presenceStore(cfg)                 // ตำแหน่ง client ถาวร (Redis) → reconnect/refresh/logout แล้วยืนที่เดิม
 
 	// ---- ชั้น transport/state (dependency ไหลทางเดียว: router → hub/room/...) ----
-	h := hub.New()                     // ชั้น transport (การเชื่อมต่อ)
-	go h.Run()                         //
-	rm := room.NewManager()            // ชั้น state (ตำแหน่งผู้เล่น)
-	rt := router.New(h, rm, taskStore) // ตัวสั่งการ: ดูด hub แล้ว dispatch; task ลง DB ผ่าน taskStore
-	go rt.Run()                        //
+	h := hub.New()                                            // ชั้น transport (การเชื่อมต่อ)
+	go h.Run()                                                //
+	rm := room.NewManager()                                   // ชั้น state (ตำแหน่งผู้เล่น in-memory)
+	rt := router.New(h, rm, taskStore, boardStore, positions) // ตัวสั่งการ: ดูด hub แล้ว dispatch
+	go rt.Run()                                               //
 
 	// ---- auth (handler) ----
 	authH := handler.NewAuthHandler(service.NewStore(usersRepo), service.NewTokens(cfg.JWTSecret))
@@ -83,4 +93,26 @@ func mustDB(cfg config.Config) *gorm.DB {
 	}
 	log.Println("ใช้ Postgres (GORM) เก็บ user/task — ถาวร")
 	return db
+}
+
+// presenceStore เลือกที่เก็บตำแหน่ง client ตาม config:
+//   - มี REDIS_URL → Redis (ถาวร: reconnect/refresh/logout แล้วยืนที่เดิม, รอด restart)
+//   - ไม่มี        → Noop (ไม่เก็บ → spawn ใหม่ทุกครั้ง, สะดวกตอน dev)
+func presenceStore(cfg config.Config) presence.Store {
+	if cfg.RedisAddr == "" {
+		log.Println("REDIS_ADDR ว่าง → ไม่เก็บตำแหน่ง client (reconnect แล้ว spawn ใหม่)")
+		return presence.Noop{}
+	}
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     cfg.RedisAddr,
+		Password: cfg.RedisPassword,
+		DB:       0,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		log.Fatalf("เชื่อมต่อ Redis ไม่ได้: %v", err)
+	}
+	log.Println("ใช้ Redis เก็บตำแหน่ง client — reconnect/refresh/logout แล้วยืนที่เดิม")
+	return presence.NewRedis(rdb)
 }

@@ -11,19 +11,22 @@ import (
 	"github/minyjae/catice/internal/auth/service"
 	"github/minyjae/catice/internal/hub"
 	"github/minyjae/catice/internal/id"
+	"github/minyjae/catice/internal/presence"
 	"github/minyjae/catice/internal/protocol"
 	"github/minyjae/catice/internal/room"
 	"github/minyjae/catice/internal/signaling"
 )
 
 type Router struct {
-	hub   *hub.Hub
-	rooms *room.Manager
-	tasks *service.TaskStore // task ลง DB ผ่าน service เดียวกับ REST → WS/REST เห็นชุดเดียวกัน
+	hub       *hub.Hub
+	rooms     *room.Manager
+	tasks     *service.TaskStore  // task ลง DB ผ่าน service → ทุก client เห็นชุดเดียวกัน
+	boards    *service.BoardStore // board (kanban หลายใบ) ลง DB
+	positions presence.Store      // ตำแหน่ง client ถาวร (Redis) → reconnect/refresh/logout แล้วยืนที่เดิม
 }
 
-func New(h *hub.Hub, rm *room.Manager, tasks *service.TaskStore) *Router {
-	return &Router{hub: h, rooms: rm, tasks: tasks}
+func New(h *hub.Hub, rm *room.Manager, tasks *service.TaskStore, boards *service.BoardStore, positions presence.Store) *Router {
+	return &Router{hub: h, rooms: rm, tasks: tasks, boards: boards, positions: positions}
 }
 
 // Run วนรับ 2 อย่างจาก hub: เหตุการณ์เข้า/ออก และข้อความจาก client
@@ -43,16 +46,24 @@ func (rt *Router) Run() {
 func (rt *Router) handleEvent(ev hub.Event) {
 	switch ev.Kind {
 	case hub.Joined:
-		// 1) สร้างตัวตนในเกม + สุ่มจุดเกิด — เฉพาะตอน "ยังไม่มี" เท่านั้น
+		// 1) สร้างตัวตนในเกม — เฉพาะตอน "ยังไม่มีใน memory" เท่านั้น
 		//    (ถ้า reconnect/เปิดสายใหม่ของ user เดิม → คงตำแหน่งเดิมไว้ ไม่ spawn ทับ)
 		if _, exists := rt.rooms.Get(ev.Room, ev.ClientID); !exists {
-			// สุ่มจุดเกิด — y เริ่มที่ 2 เพื่อไม่ให้เกิดทับผนังบน (2 แถวบนที่ client กันเดิน)
-			rt.rooms.Add(ev.Room, room.Player{ID: ev.ClientID, X: rand.Intn(10), Y: 2 + rand.Intn(8)})
+			// ลองกู้ตำแหน่งเดิมจาก Redis ก่อน (รอด refresh/logout/รีสตาร์ท server)
+			pl, ok := rt.positions.Load(ev.Room, ev.ClientID)
+			if !ok {
+				// ไม่เคยมี → สุ่มจุดเกิด (y เริ่มที่ 2 ไม่ให้เกิดทับผนังบน 2 แถวที่ client กันเดิน)
+				pl = room.Player{ID: ev.ClientID, X: rand.Intn(10), Y: 2 + rand.Intn(8)}
+			}
+			rt.rooms.Add(ev.Room, pl)
+			rt.positions.Save(ev.Room, pl) // เก็บไว้ (เผื่อ spawn ใหม่ ให้ถาวรตั้งแต่ครั้งแรก)
 		}
 
-		// 2) บอก client ว่า id ตัวเองคืออะไร (welcome)
+		// 2) บอก client ว่า id ตัวเองคืออะไร + ตำแหน่ง spawn (welcome)
+		//    me = ตำแหน่งที่เพิ่งกู้จาก Redis / สุ่มไว้ด้านบน → ส่งให้ client เกิดที่เดิม
+		me, _ := rt.rooms.Get(ev.Room, ev.ClientID)
 		if out, err := protocol.NewEnvelope(protocol.TypeWelcome, protocol.WelcomePayload{
-			ID: ev.ClientID, Room: ev.Room,
+			ID: ev.ClientID, Room: ev.Room, X: me.X, Y: me.Y,
 		}); err == nil {
 			rt.hub.SendTo(ev.Room, ev.ClientID, out)
 		}
@@ -72,7 +83,14 @@ func (rt *Router) handleEvent(ev hub.Event) {
 			}
 		}
 
-		// snapshot task ทั้งหมดจาก DB → คนใหม่ (ส่งเป็น task_create, frontend upsert ตาม id)
+		// snapshot board ทั้งหมดก่อน (frontend สร้างบอร์ดให้ครบ) แล้วค่อยส่ง task
+		for _, b := range rt.boards.List() {
+			if out, err := protocol.NewEnvelope(protocol.TypeBoardCreate, b); err == nil {
+				rt.hub.SendTo(ev.Room, ev.ClientID, out)
+			}
+		}
+
+		// snapshot task ทั้งหมดจาก DB → คนใหม่ (มี board_id, frontend วางลงบอร์ดตาม board_id)
 		for _, t := range rt.tasks.List() {
 			if out, err := protocol.NewEnvelope(protocol.TypeTaskCreate, t); err == nil {
 				rt.hub.SendTo(ev.Room, ev.ClientID, out)
@@ -111,21 +129,51 @@ func (rt *Router) handleMessage(in hub.Inbound) {
 		}
 		rt.updatePlayer(in.Room, in.ClientID, func(pl *room.Player) { pl.X = p.X; pl.Y = p.Y }, protocol.TypeMove)
 
+	case protocol.TypeSwitchRoom:
+		var p protocol.SwitchRoomPayload
+		if json.Unmarshal(env.Payload, &p) != nil {
+			return
+		}
+		if p.Room == "" || p.Room == in.Room {
+			return
+		}
+		// hub ย้าย membership → ยิง Left(ห้องเก่า)+Joined(ห้องใหม่) → handleEvent กู้ตำแหน่ง/sync ต่อเอง
+		rt.hub.SwitchRoom(in.Room, in.ClientID, p.Room)
+
 	case protocol.TypeChat:
 		var p protocol.ChatPayload
 		if json.Unmarshal(env.Payload, &p) != nil {
 			return
 		}
-		pl, _ := rt.rooms.Get(in.Room, in.ClientID) // เอาชื่อมาแนบ
-		if out, err := protocol.NewEnvelope(protocol.TypeChat, protocol.ChatBroadcast{
-			ID: in.ClientID, Name: pl.Name, Text: p.Text,
-		}); err == nil {
+		pl, _ := rt.rooms.Get(in.Room, in.ClientID) // เอาชื่อผู้ส่งมาแนบ
+		out, err := protocol.NewEnvelope(protocol.TypeChat, protocol.ChatBroadcast{
+			Scope: p.Scope, ID: in.ClientID, Name: pl.Name, To: p.To, Text: p.Text,
+		})
+		if err != nil {
+			return
+		}
+		switch p.Scope {
+		case "all": // ทั้งหมด → ทุกคนทุกห้อง
+			rt.hub.BroadcastAll(out)
+		case "private": // ส่วนตัว → ปลายทาง + echo กลับให้ผู้ส่งเห็นเอง
+			if p.To == "" {
+				return
+			}
+			rt.hub.SendToUser(p.To, out)
+			rt.hub.SendToUser(in.ClientID, out)
+		default: // "room"/ว่าง → เฉพาะห้องนี้
 			rt.hub.Broadcast(in.Room, out)
 		}
 
 	case protocol.TypeSignal:
 		// relay WebRTC ให้ peer ปลายทางคนเดียว
 		if toID, data, ok := signaling.Relay(in.ClientID, env.Payload); ok {
+			rt.hub.SendTo(in.Room, toID, data)
+		}
+
+	case protocol.TypeCallInvite, protocol.TypeCallAccept, protocol.TypeCallReject, protocol.TypeCallCancel:
+		// คุมการเชิญสาย — relay unicast ไป to (from เติมจาก ClientID/JWT); ปลายทางออฟไลน์ → SendTo เงียบ
+		if toID, data, ok := signaling.RelayCall(env.Type, in.ClientID, env.Payload); ok {
 			rt.hub.SendTo(in.Room, toID, data)
 		}
 
@@ -143,14 +191,50 @@ func (rt *Router) handleMessage(in hub.Inbound) {
 			rt.hub.Broadcast(in.Room, out)
 		}
 
+	case protocol.TypeBoardCreate:
+		var p protocol.BoardCreatePayload
+		if json.Unmarshal(env.Payload, &p) != nil {
+			return
+		}
+		if board, err := rt.boards.Create(p.Name); err == nil {
+			if out, err := protocol.NewEnvelope(protocol.TypeBoardCreate, board); err == nil {
+				rt.hub.Broadcast(in.Room, out)
+			}
+		}
+
+	case protocol.TypeBoardRename:
+		var p protocol.BoardRenamePayload
+		if json.Unmarshal(env.Payload, &p) != nil {
+			return
+		}
+		if board, ok := rt.boards.Rename(p.ID, p.Name); ok {
+			if out, err := protocol.NewEnvelope(protocol.TypeBoardRename, board); err == nil {
+				rt.hub.Broadcast(in.Room, out)
+			}
+		}
+
+	case protocol.TypeBoardDelete:
+		var p protocol.BoardDeletePayload
+		if json.Unmarshal(env.Payload, &p) != nil {
+			return
+		}
+		rt.boards.Delete(p.ID)
+		rt.tasks.DeleteByBoard(p.ID) // cascade: ลบ task ของบอร์ดด้วย
+		if out, err := protocol.NewEnvelope(protocol.TypeBoardDelete, p); err == nil {
+			rt.hub.Broadcast(in.Room, out)
+		}
+
 	case protocol.TypeTaskCreate:
 		var p protocol.TaskCreatePayload
 		if json.Unmarshal(env.Payload, &p) != nil {
 			return
 		}
+		if !rt.boards.Exists(p.BoardID) { // กัน task ลอย (สร้างใต้บอร์ดที่ไม่มี)
+			return
+		}
 		// createdBy = ผู้ส่ง (จาก auth/JWT) ไม่เชื่อ client; service แจก id + status "todo" + บันทึกลง DB
 		task, err := rt.tasks.Create(in.ClientID, domain.CreateTaskPayload{
-			Title: p.Title, Detail: p.Detail, AssignTo: p.AssignTo,
+			BoardID: p.BoardID, Title: p.Title, Detail: p.Detail, AssignTo: p.AssignTo,
 		})
 		if err != nil {
 			return
@@ -201,6 +285,7 @@ func (rt *Router) updatePlayer(roomName, id string, mutate func(*room.Player), t
 	}
 	mutate(&pl)
 	rt.rooms.Add(roomName, pl)
+	rt.positions.Save(roomName, pl) // write-through → ตำแหน่ง/ชื่อล่าสุดลง Redis (async ไม่หน่วง loop)
 
 	if out, err := protocol.NewEnvelope(typ, pl); err == nil {
 		rt.hub.Broadcast(roomName, out)

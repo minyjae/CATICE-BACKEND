@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -27,7 +28,22 @@ type Client struct {
 	conn *websocket.Conn
 	send chan []byte
 	id   string
+
+	// room อาจถูกเปลี่ยนโดย hub goroutine (switch_room) ขณะ readPump อ่านอยู่ → กันด้วย mutex
+	mu   sync.RWMutex
 	room string
+}
+
+func (c *Client) getRoom() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.room
+}
+
+func (c *Client) setRoom(r string) {
+	c.mu.Lock()
+	c.room = r
+	c.mu.Unlock()
 }
 
 // readPump อ่านข้อความขาเข้า → ส่งต่อให้ hub.incoming (ไม่ตีความเอง)
@@ -51,7 +67,7 @@ func (c *Client) readPump() {
 			break
 		}
 		// ส่งต่อให้ router ผ่าน channel กลางของ hub (พร้อมแปะว่าใคร/ห้องไหน)
-		c.hub.incoming <- Inbound{ClientID: c.id, Room: c.room, Data: message}
+		c.hub.incoming <- Inbound{ClientID: c.id, Room: c.getRoom(), Data: message}
 	}
 }
 

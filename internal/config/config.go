@@ -14,14 +14,21 @@ type Config struct {
 	// JWTSecret : กุญแจลับสำหรับเซ็น/ตรวจ JWT (HS256)
 	// ⚠️ production ต้องตั้งผ่าน env ให้เป็นค่าสุ่มยาว ๆ และเก็บเป็นความลับ
 	JWTSecret string
+	// RedisAddr : host:port ของ Redis สำหรับเก็บตำแหน่ง client (เช่น localhost:6379)
+	// ว่าง = ไม่เก็บตำแหน่งถาวร → reconnect/refresh แล้ว spawn ใหม่ (พฤติกรรมเดิม)
+	RedisAddr string
+	// RedisPassword : รหัสผ่าน Redis (ว่างได้ถ้า Redis ไม่ตั้งรหัส)
+	RedisPassword string
 }
 
 // Load อ่าน env → Config (มี default ให้ค่าที่ไม่ตั้ง)
 func Load() Config {
 	return Config{
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		Addr:        getenv("ADDR", ":8080"),
-		JWTSecret:   getenv("JWT_SECRET", "dev-secret-change-me"),
+		DatabaseURL:   os.Getenv("DATABASE_URL"),
+		Addr:          getenv("ADDR", ":8080"),
+		JWTSecret:     getenv("JWT_SECRET", "dev-secret-change-me"),
+		RedisAddr:     os.Getenv("REDIS_ADDR"),
+		RedisPassword: os.Getenv("REDIS_PASSWORD"),
 	}
 }
 

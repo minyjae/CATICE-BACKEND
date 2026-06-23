@@ -21,6 +21,7 @@ func (s Status) Valid() bool {
 
 type Task struct {
 	ID        string   `json:"id"`
+	BoardID   string   `json:"board_id"` // board ที่ task นี้สังกัด
 	Title     string   `json:"title"`
 	Detail    string   `json:"detail"`
 	TStatus   Status   `json:"status"`

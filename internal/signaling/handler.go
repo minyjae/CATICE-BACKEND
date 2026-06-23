@@ -23,3 +23,19 @@ func Relay(fromID string, payload json.RawMessage) (toID string, data []byte, ok
 	}
 	return s.To, out, true
 }
+
+// RelayCall แกะ to ของข้อความคุมสาย, เติม From=fromID, ห่อใหม่เป็น envelope ชนิด t (เดิม)
+// ใช้กับ call_invite/accept/reject/cancel — ส่ง unicast ไป to (router เรียก hub.SendTo)
+// คืน (ปลายทาง, byte พร้อมส่ง, ok=false ถ้า payload เพี้ยน/ไม่มี to)
+func RelayCall(t protocol.MessageType, fromID string, payload json.RawMessage) (toID string, data []byte, ok bool) {
+	var c CallPayload
+	if err := json.Unmarshal(payload, &c); err != nil || c.To == "" {
+		return "", nil, false
+	}
+	// ขาออกส่งเฉพาะ From (id ผู้ส่งจริงจาก JWT) — ไม่หลุด to/ค่าปลอมจาก client
+	out, err := protocol.NewEnvelope(t, CallPayload{From: fromID})
+	if err != nil {
+		return "", nil, false
+	}
+	return c.To, out, true
+}

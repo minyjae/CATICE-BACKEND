@@ -37,6 +37,7 @@ func (s *TaskStore) Create(createdBy string, p domain.CreateTaskPayload) (domain
 
 	t := domain.Task{
 		ID:        id.New(),
+		BoardID:   p.BoardID,
 		Title:     title,
 		Detail:    p.Detail,
 		TStatus:   status,
@@ -81,6 +82,11 @@ func (s *TaskStore) Update(taskID, title, detail string, assignTo []string) (dom
 // Delete ลบ task ตาม id
 func (s *TaskStore) Delete(taskID string) {
 	_ = s.repo.Delete(taskID)
+}
+
+// DeleteByBoard ลบ task ทั้งหมดของบอร์ด (cascade ตอนลบ board)
+func (s *TaskStore) DeleteByBoard(boardID string) {
+	_ = s.repo.DeleteByBoard(boardID)
 }
 
 // List คืน task ทั้งหมด

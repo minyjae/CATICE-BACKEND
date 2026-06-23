@@ -33,11 +33,23 @@ type Event struct {
 	Room     string
 }
 
-// outbound = คำสั่งส่งออก: id=="" → ทั้งห้อง, ไม่งั้น → คนเดียวเจาะจง
+// outbound = คำสั่งส่งออก:
+//   - all==true          → ทุก client ทุกห้อง (chat "ทั้งหมด")
+//   - room=="" && id!=""  → user คนเดียวข้ามทุกห้อง (chat "ส่วนตัว")
+//   - id==""             → ทั้งห้อง (chat "ห้องนี้" / broadcast ทั่วไป)
+//   - room+id            → คนเดียวเจาะจงในห้อง
 type outbound struct {
 	room string
 	id   string
+	all  bool
 	data []byte
+}
+
+// switchReq = คำขอย้ายห้องของ client คนหนึ่ง (จาก room → newRoom)
+type switchReq struct {
+	room    string
+	id      string
+	newRoom string
 }
 
 type Hub struct {
@@ -47,6 +59,7 @@ type Hub struct {
 	out        chan outbound
 	incoming   chan Inbound
 	events     chan Event
+	switchCh   chan switchReq
 }
 
 // New สร้าง Hub — channel incoming/events/out ใช้ buffer เพื่อกัน deadlock
@@ -59,6 +72,7 @@ func New() *Hub {
 		out:        make(chan outbound, 1024),
 		incoming:   make(chan Inbound, 256),
 		events:     make(chan Event, 64),
+		switchCh:   make(chan switchReq, 64),
 	}
 }
 
@@ -77,6 +91,22 @@ func (h *Hub) Broadcast(room string, data []byte) {
 // SendTo ส่งให้คนเดียวเจาะจง (ตาม id) ในห้อง
 func (h *Hub) SendTo(room, id string, data []byte) {
 	h.out <- outbound{room: room, id: id, data: data}
+}
+
+// BroadcastAll ส่งให้ทุก client ทุกห้อง (chat "ทั้งหมด")
+func (h *Hub) BroadcastAll(data []byte) {
+	h.out <- outbound{all: true, data: data}
+}
+
+// SendToUser ส่งให้ user คนเดียวไม่ว่าอยู่ห้องไหน (chat "ส่วนตัว") — 1 user = 1 connection
+func (h *Hub) SendToUser(id string, data []byte) {
+	h.out <- outbound{id: id, data: data}
+}
+
+// SwitchRoom ย้าย client (id) จากห้อง room → newRoom บน connection เดิม
+// hub จะยิง Left (ห้องเก่า) + Joined (ห้องใหม่) → router ทำ broadcast/กู้ตำแหน่งต่อเอง
+func (h *Hub) SwitchRoom(room, id, newRoom string) {
+	h.switchCh <- switchReq{room: room, id: id, newRoom: newRoom}
 }
 
 // Run คือ loop หลัก (goroutine เดียวที่แตะ rooms → ไม่ต้อง lock)
@@ -113,19 +143,70 @@ func (h *Hub) Run() {
 			}
 
 		case o := <-h.out:
-			set := h.rooms[o.room]
-			if o.id == "" {
-				for c := range set {
+			switch {
+			case o.all: // ทุก client ทุกห้อง (chat "ทั้งหมด")
+				for _, set := range h.rooms {
+					for c := range set {
+						c.send <- o.data
+					}
+				}
+			case o.room == "": // user ตาม id ข้ามทุกห้อง (chat "ส่วนตัว")
+				for _, set := range h.rooms {
+					for c := range set {
+						if c.id == o.id {
+							c.send <- o.data
+						}
+					}
+				}
+			case o.id == "": // ทั้งห้อง
+				for c := range h.rooms[o.room] {
 					c.send <- o.data
 				}
-			} else {
-				for c := range set {
+			default: // คนเดียวเจาะจงในห้อง
+				for c := range h.rooms[o.room] {
 					if c.id == o.id {
 						c.send <- o.data
 						break
 					}
 				}
 			}
+
+		case sw := <-h.switchCh:
+			if sw.newRoom == "" || sw.newRoom == sw.room {
+				continue // ห้องเดิม/ว่าง → ไม่ต้องทำ
+			}
+			// หา client ในห้องเก่า
+			var cl *Client
+			for c := range h.rooms[sw.room] {
+				if c.id == sw.id {
+					cl = c
+					break
+				}
+			}
+			if cl == nil {
+				continue // ไม่เจอ (อาจหลุดไปก่อน) → ข้าม
+			}
+
+			// 1) ออกจากห้องเก่า → ยิง Left ให้ router broadcast ให้คนในห้องเก่า
+			delete(h.rooms[sw.room], cl)
+			if len(h.rooms[sw.room]) == 0 {
+				delete(h.rooms, sw.room)
+			}
+			h.events <- Event{Kind: Left, ClientID: cl.id, Room: sw.room}
+
+			// 2) เข้าห้องใหม่ (เตะสายเก่า id เดียวกันที่อาจค้างในห้องใหม่ก่อน เหมือน register)
+			cl.setRoom(sw.newRoom)
+			if h.rooms[sw.newRoom] == nil {
+				h.rooms[sw.newRoom] = make(map[*Client]bool)
+			}
+			for old := range h.rooms[sw.newRoom] {
+				if old.id == cl.id {
+					delete(h.rooms[sw.newRoom], old)
+					close(old.send)
+				}
+			}
+			h.rooms[sw.newRoom][cl] = true
+			h.events <- Event{Kind: Joined, ClientID: cl.id, Room: sw.newRoom}
 		}
 	}
 }

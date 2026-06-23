@@ -13,6 +13,7 @@ import (
 //   - AssignTo เก็บเป็น JSON text (คอลัมน์เดียว) → ไม่ต้องมีตาราง join ให้ยุ่ง
 type TaskModel struct {
 	ID        string `gorm:"primaryKey"`
+	BoardID   string `gorm:"index"` // board ที่ task สังกัด — index → query/ลบตามบอร์ดได้เร็ว
 	Title     string `gorm:"not null"`
 	Detail    string
 	Status    string `gorm:"not null"`
@@ -30,6 +31,7 @@ func taskToDomain(m TaskModel) domain.Task {
 	}
 	return domain.Task{
 		ID:        m.ID,
+		BoardID:   m.BoardID,
 		Title:     m.Title,
 		Detail:    m.Detail,
 		TStatus:   domain.Status(m.Status),
@@ -50,6 +52,7 @@ func taskFromDomain(t domain.Task) (TaskModel, error) {
 	}
 	return TaskModel{
 		ID:        t.ID,
+		BoardID:   t.BoardID,
 		Title:     t.Title,
 		Detail:    t.Detail,
 		Status:    string(t.TStatus),
@@ -90,6 +93,11 @@ func (g *gormTasks) Update(t domain.Task) error {
 
 func (g *gormTasks) Delete(id string) error {
 	return g.db.Delete(&TaskModel{}, "id = ?", id).Error
+}
+
+// DeleteByBoard ลบ task ทั้งหมดของบอร์ด (cascade ตอนลบ board)
+func (g *gormTasks) DeleteByBoard(boardID string) error {
+	return g.db.Delete(&TaskModel{}, "board_id = ?", boardID).Error
 }
 
 func (g *gormTasks) ByID(id string) (domain.Task, bool) {
