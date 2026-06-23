@@ -6,6 +6,7 @@ package router
 import (
 	"encoding/json"
 	"math/rand"
+	"strings"
 
 	"github/minyjae/catice/internal/auth/domain"
 	"github/minyjae/catice/internal/auth/service"
@@ -22,11 +23,12 @@ type Router struct {
 	rooms     *room.Manager
 	tasks     *service.TaskStore  // task ลง DB ผ่าน service → ทุก client เห็นชุดเดียวกัน
 	boards    *service.BoardStore // board (kanban หลายใบ) ลง DB
+	chat      *service.ChatStore  // ข้อความแชต (room/all/private) ลง DB + ส่งประวัติตอน join
 	positions presence.Store      // ตำแหน่ง client ถาวร (Redis) → reconnect/refresh/logout แล้วยืนที่เดิม
 }
 
-func New(h *hub.Hub, rm *room.Manager, tasks *service.TaskStore, boards *service.BoardStore, positions presence.Store) *Router {
-	return &Router{hub: h, rooms: rm, tasks: tasks, boards: boards, positions: positions}
+func New(h *hub.Hub, rm *room.Manager, tasks *service.TaskStore, boards *service.BoardStore, chat *service.ChatStore, positions presence.Store) *Router {
+	return &Router{hub: h, rooms: rm, tasks: tasks, boards: boards, chat: chat, positions: positions}
 }
 
 // Run วนรับ 2 อย่างจาก hub: เหตุการณ์เข้า/ออก และข้อความจาก client
@@ -97,6 +99,13 @@ func (rt *Router) handleEvent(ev hub.Event) {
 			}
 		}
 
+		// snapshot ประวัติแชต: ห้องนี้ + ทั้งหมด + DM ของ user นี้ (frontend แยกตาม scope + dedupe ด้วย mid)
+		for _, m := range rt.chat.History(ev.Room, ev.ClientID) {
+			if out, err := protocol.NewEnvelope(protocol.TypeChat, chatToBroadcast(m)); err == nil {
+				rt.hub.SendTo(ev.Room, ev.ClientID, out)
+			}
+		}
+
 	case hub.Left:
 		// ลบ state + บอกทุกคนว่าคนนี้ออกไปแล้ว
 		rt.rooms.Remove(ev.Room, ev.ClientID)
@@ -145,23 +154,36 @@ func (rt *Router) handleMessage(in hub.Inbound) {
 		if json.Unmarshal(env.Payload, &p) != nil {
 			return
 		}
+		if strings.TrimSpace(p.Text) == "" {
+			return // ไม่เก็บ/ส่งข้อความว่าง
+		}
+		scope := p.Scope
+		if scope == "" {
+			scope = "room" // ดีฟอลต์
+		}
+		if scope == "private" && p.To == "" {
+			return // private ต้องมีปลายทาง
+		}
 		pl, _ := rt.rooms.Get(in.Room, in.ClientID) // เอาชื่อผู้ส่งมาแนบ
-		out, err := protocol.NewEnvelope(protocol.TypeChat, protocol.ChatBroadcast{
-			Scope: p.Scope, ID: in.ClientID, Name: pl.Name, To: p.To, Text: p.Text,
-		})
+
+		// บันทึกลง DB → ได้ id + เวลา (room เก็บเฉพาะ scope=room)
+		msgRoom := ""
+		if scope == "room" {
+			msgRoom = in.Room
+		}
+		msg := rt.chat.Record(scope, msgRoom, in.ClientID, pl.Name, p.To, p.Text)
+
+		out, err := protocol.NewEnvelope(protocol.TypeChat, chatToBroadcast(msg))
 		if err != nil {
 			return
 		}
-		switch p.Scope {
+		switch scope {
 		case "all": // ทั้งหมด → ทุกคนทุกห้อง
 			rt.hub.BroadcastAll(out)
 		case "private": // ส่วนตัว → ปลายทาง + echo กลับให้ผู้ส่งเห็นเอง
-			if p.To == "" {
-				return
-			}
 			rt.hub.SendToUser(p.To, out)
 			rt.hub.SendToUser(in.ClientID, out)
-		default: // "room"/ว่าง → เฉพาะห้องนี้
+		default: // room → เฉพาะห้องนี้
 			rt.hub.Broadcast(in.Room, out)
 		}
 
@@ -274,6 +296,14 @@ func (rt *Router) handleMessage(in hub.Inbound) {
 		if out, err := protocol.NewEnvelope(protocol.TypeTaskDelete, p); err == nil {
 			rt.hub.Broadcast(in.Room, out)
 		}
+	}
+}
+
+// chatToBroadcast แปลง domain.Message → payload ที่ส่งให้ client (live + ประวัติใช้ตัวเดียวกัน)
+func chatToBroadcast(m domain.Message) protocol.ChatBroadcast {
+	return protocol.ChatBroadcast{
+		Mid: m.ID, Ts: m.CreatedAt, Scope: m.Scope,
+		ID: m.FromID, Name: m.FromName, To: m.To, Text: m.Text,
 	}
 }
 

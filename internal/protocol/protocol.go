@@ -77,9 +77,11 @@ type LeavePayload struct {
 //   - frontend ใช้ Scope จัดเข้าแท็บถูก (ห้องนี้/ทั้งหมด/ส่วนตัว)
 //   - private: ID=ผู้ส่ง, To=ปลายทาง → คู่สนทนาคืออีกฝั่งของ (ID,To)
 type ChatBroadcast struct {
+	Mid   string `json:"mid"` // message id — frontend dedupe (ข้อความ live ที่เคยรับ vs ที่มาซ้ำในประวัติ)
+	Ts    int64  `json:"ts"`  // unix seconds — เรียงลำดับ/แสดงเวลา
 	Scope string `json:"scope"`
-	ID    string `json:"id"`
-	Name  string `json:"name"`
+	ID    string `json:"id"`   // id ผู้ส่ง
+	Name  string `json:"name"` // ชื่อผู้ส่ง
 	To    string `json:"to,omitempty"`
 	Text  string `json:"text"`
 }

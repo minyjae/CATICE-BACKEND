@@ -36,15 +36,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("migrate ตาราง boards ไม่ได้: %v", err)
 	}
+	messagesRepo, err := repository.NewGormMessages(db)
+	if err != nil {
+		log.Fatalf("migrate ตาราง messages ไม่ได้: %v", err)
+	}
 	taskStore := service.NewTaskStore(tasksRepo)    // task ทั้งหมดไปทาง WS (router) — ดู create/move/update/delete ใน message_router
 	boardStore := service.NewBoardStore(boardsRepo) // board (kanban หลายใบ) ผ่าน WS เช่นกัน
+	chatStore := service.NewChatStore(messagesRepo) // แชต room/all/private เก็บลง DB + ส่งประวัติตอน join
 	positions := presenceStore(cfg)                 // ตำแหน่ง client ถาวร (Redis) → reconnect/refresh/logout แล้วยืนที่เดิม
 
 	// ---- ชั้น transport/state (dependency ไหลทางเดียว: router → hub/room/...) ----
 	h := hub.New()                                            // ชั้น transport (การเชื่อมต่อ)
 	go h.Run()                                                //
 	rm := room.NewManager()                                   // ชั้น state (ตำแหน่งผู้เล่น in-memory)
-	rt := router.New(h, rm, taskStore, boardStore, positions) // ตัวสั่งการ: ดูด hub แล้ว dispatch
+	rt := router.New(h, rm, taskStore, boardStore, chatStore, positions) // ตัวสั่งการ: ดูด hub แล้ว dispatch
 	go rt.Run()                                               //
 
 	// ---- auth (handler) ----
