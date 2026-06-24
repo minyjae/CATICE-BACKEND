@@ -22,8 +22,10 @@ type Inbound struct {
 type EventKind int
 
 const (
-	Joined EventKind = iota // client ต่อเข้ามา + เข้าห้องแล้ว
-	Left                    // client หลุด/ออกไปแล้ว
+	Joined  EventKind = iota // client ต่อเข้ามา + เข้าห้องแล้ว
+	Left                     // client หลุด/ออกไปแล้ว
+	Online                   // user มี connection จริงครั้งแรก (presence — ไม่ยิงตอน switch_room)
+	Offline                  // user ไม่เหลือ connection แล้ว (presence)
 )
 
 // Event แจ้ง router ว่ามีคนเข้า/ออก (router จะไปทำ snapshot / broadcast leave)
@@ -109,11 +111,25 @@ func (h *Hub) SwitchRoom(room, id, newRoom string) {
 	h.switchCh <- switchReq{room: room, id: id, newRoom: newRoom}
 }
 
+// userOnline = user id นี้มี connection อยู่ห้องไหนสักห้องไหม (ใช้ตัดสิน presence online/offline)
+func (h *Hub) userOnline(id string) bool {
+	for _, set := range h.rooms {
+		for c := range set {
+			if c.id == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Run คือ loop หลัก (goroutine เดียวที่แตะ rooms → ไม่ต้อง lock)
 func (h *Hub) Run() {
 	for {
 		select {
 		case c := <-h.register:
+			// เช็ค "เคย online ไหม" ก่อนแตะ membership — refresh จะมีสายเก่าค้าง → wasOnline=true → ไม่ยิง Online ซ้ำ
+			wasOnline := h.userOnline(c.id)
 			if h.rooms[c.room] == nil {
 				h.rooms[c.room] = make(map[*Client]bool)
 			}
@@ -129,6 +145,9 @@ func (h *Hub) Run() {
 			}
 			h.rooms[c.room][c] = true
 			h.events <- Event{Kind: Joined, ClientID: c.id, Room: c.room}
+			if !wasOnline {
+				h.events <- Event{Kind: Online, ClientID: c.id} // เพิ่ง online ครั้งแรก (ไม่ใช่ refresh)
+			}
 
 		case c := <-h.unregister:
 			if set, ok := h.rooms[c.room]; ok {
@@ -139,6 +158,9 @@ func (h *Hub) Run() {
 						delete(h.rooms, c.room)
 					}
 					h.events <- Event{Kind: Left, ClientID: c.id, Room: c.room}
+					if !h.userOnline(c.id) {
+						h.events <- Event{Kind: Offline, ClientID: c.id} // ไม่เหลือ connection แล้ว → offline
+					}
 				}
 			}
 

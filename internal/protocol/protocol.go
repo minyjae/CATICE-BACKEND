@@ -18,6 +18,8 @@ const (
 	TypeCallReject  MessageType = "call_reject" // ปฏิเสธคำเชิญ
 	TypeCallCancel  MessageType = "call_cancel" // ผู้ชวนยกเลิกก่อนตอบ
 	TypeSwitchRoom  MessageType = "switch_room" // client ขอย้ายห้องบน connection เดิม (ไม่ reconnect)
+	TypePresence    MessageType = "presence"    // server แจ้งสถานะ online/in_call ของ user (ขาออก)
+	TypeCallStatus  MessageType = "call_status" // client รายงานสถานะกล้องตัวเอง online↔in-call (ขาเข้า)
 	TypeObject      MessageType = "object"
 	TypeBoardCreate MessageType = "board_create"
 	TypeBoardRename MessageType = "board_rename"
@@ -44,6 +46,20 @@ type Envelope struct {
 // JoinPayload : ข้อมูลตอนเข้าห้อง
 type JoinPayload struct {
 	Name string `json:"name"`
+}
+
+// PresencePayload : สถานะของ user 1 คน (server → ทุก client + snapshot ตอน join)
+//   - Online : มี connection อยู่ในระบบไหม (ข้ามห้อง)
+//   - InCall : กำลังเปิดสายวิดีโออยู่ไหม (busy)
+type PresencePayload struct {
+	ID     string `json:"id"`
+	Online bool   `json:"online"`
+	InCall bool   `json:"in_call"`
+}
+
+// CallStatusPayload : client รายงานว่าตอนนี้ตัวเอง in-call ไหม (เปิด/ปิดกล้อง)
+type CallStatusPayload struct {
+	InCall bool `json:"in_call"`
 }
 
 // SwitchRoomPayload : client ขอย้ายไปห้องใหม่บน connection เดิม

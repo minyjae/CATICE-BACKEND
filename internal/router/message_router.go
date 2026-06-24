@@ -25,10 +25,18 @@ type Router struct {
 	boards    *service.BoardStore // board (kanban หลายใบ) ลง DB
 	chat      *service.ChatStore  // ข้อความแชต (room/all/private) ลง DB + ส่งประวัติตอน join
 	positions presence.Store      // ตำแหน่ง client ถาวร (Redis) → reconnect/refresh/logout แล้วยืนที่เดิม
+
+	// presence — แตะเฉพาะใน router goroutine เดียว → ไม่ต้อง lock (เหมือน room.Manager)
+	online map[string]bool // userId → มี connection อยู่ในระบบ (ข้ามห้อง)
+	inCall map[string]bool // userId → กำลังเปิดสายวิดีโอ (busy)
 }
 
 func New(h *hub.Hub, rm *room.Manager, tasks *service.TaskStore, boards *service.BoardStore, chat *service.ChatStore, positions presence.Store) *Router {
-	return &Router{hub: h, rooms: rm, tasks: tasks, boards: boards, chat: chat, positions: positions}
+	return &Router{
+		hub: h, rooms: rm, tasks: tasks, boards: boards, chat: chat, positions: positions,
+		online: make(map[string]bool),
+		inCall: make(map[string]bool),
+	}
 }
 
 // Run วนรับ 2 อย่างจาก hub: เหตุการณ์เข้า/ออก และข้อความจาก client
@@ -106,12 +114,39 @@ func (rt *Router) handleEvent(ev hub.Event) {
 			}
 		}
 
+		// snapshot presence: ใครออนไลน์/อยู่ในสายอยู่บ้าง → ให้คน join คนเดียว
+		for id := range rt.online {
+			if out, err := protocol.NewEnvelope(protocol.TypePresence, protocol.PresencePayload{
+				ID: id, Online: true, InCall: rt.inCall[id],
+			}); err == nil {
+				rt.hub.SendTo(ev.Room, ev.ClientID, out)
+			}
+		}
+
 	case hub.Left:
 		// ลบ state + บอกทุกคนว่าคนนี้ออกไปแล้ว
 		rt.rooms.Remove(ev.Room, ev.ClientID)
 		if out, err := protocol.NewEnvelope(protocol.TypeLeave, protocol.LeavePayload{ID: ev.ClientID}); err == nil {
 			rt.hub.Broadcast(ev.Room, out)
 		}
+
+	case hub.Online:
+		rt.online[ev.ClientID] = true
+		rt.broadcastPresence(ev.ClientID)
+
+	case hub.Offline:
+		delete(rt.online, ev.ClientID)
+		delete(rt.inCall, ev.ClientID)
+		rt.broadcastPresence(ev.ClientID)
+	}
+}
+
+// broadcastPresence ส่งสถานะล่าสุดของ user คนหนึ่งให้ทุก client ทุกห้อง
+func (rt *Router) broadcastPresence(id string) {
+	if out, err := protocol.NewEnvelope(protocol.TypePresence, protocol.PresencePayload{
+		ID: id, Online: rt.online[id], InCall: rt.inCall[id],
+	}); err == nil {
+		rt.hub.BroadcastAll(out)
 	}
 }
 
@@ -186,6 +221,19 @@ func (rt *Router) handleMessage(in hub.Inbound) {
 		default: // room → เฉพาะห้องนี้
 			rt.hub.Broadcast(in.Room, out)
 		}
+
+	case protocol.TypeCallStatus:
+		// client รายงานสถานะกล้องตัวเอง (online ↔ in-call) → อัปเดต + broadcast presence
+		var p protocol.CallStatusPayload
+		if json.Unmarshal(env.Payload, &p) != nil {
+			return
+		}
+		if p.InCall {
+			rt.inCall[in.ClientID] = true
+		} else {
+			delete(rt.inCall, in.ClientID)
+		}
+		rt.broadcastPresence(in.ClientID)
 
 	case protocol.TypeSignal:
 		// relay WebRTC ให้ peer ปลายทางคนเดียว

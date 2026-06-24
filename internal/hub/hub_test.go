@@ -5,15 +5,21 @@ import (
 	"time"
 )
 
-// helper: รอรับจาก channel โดยมี timeout กันค้าง
+// helper: รอรับ lifecycle event (Joined/Left) ถัดไป โดยข้าม presence (Online/Offline)
+// — เทสต์ชุดนี้สนใจแค่ Joined/Left; presence ถูกเพิ่มทีหลังและไหลปนมาใน channel เดียวกัน
 func recvEvent(t *testing.T, h *Hub) Event {
 	t.Helper()
-	select {
-	case ev := <-h.events:
-		return ev
-	case <-time.After(time.Second):
-		t.Fatal("ไม่ได้รับ event")
-		return Event{}
+	for {
+		select {
+		case ev := <-h.events:
+			if ev.Kind == Online || ev.Kind == Offline {
+				continue
+			}
+			return ev
+		case <-time.After(time.Second):
+			t.Fatal("ไม่ได้รับ event")
+			return Event{}
+		}
 	}
 }
 
