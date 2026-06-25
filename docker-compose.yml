@@ -5,12 +5,16 @@ services:
     ports:
       - "8080:8080" # frontend (Vite :5173) proxy มาที่ localhost:8080 ได้เลย
     environment:
-      # DSN ของ Postgres (host = ชื่อ service "db" ใน network เดียวกัน)
-      DATABASE_URL: postgres://catice:catice@db:5432/catice?sslmode=disable
+      # ที่อยู่ที่ app ฟัง (ภายใน container) — คง :8080 ให้ตรงกับ port mapping ด้านบน
+      ADDR: ${ADDR:-:8080}
+      # DSN ของ Postgres — ประกอบจากค่าใน .env แต่ host = "db" (ชื่อ service ใน network เดียวกัน)
+      # ไม่ใช้ DATABASE_URL จาก .env ตรง ๆ เพราะนั่นชี้ localhost (สำหรับรัน binary นอก docker)
+      DATABASE_URL: postgres://${POSTGRES_USER:-catice}:${POSTGRES_PASSWORD:-catice}@db:5432/${POSTGRES_DB:-catice}?sslmode=disable
       # Redis (host = ชื่อ service "redis" ใน network เดียวกัน)
       REDIS_ADDR: redis:6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-      # กุญแจลับเซ็น JWT — ⚠️ production ต้องเปลี่ยนเป็นค่าสุ่มยาว ๆ (เช่นผ่าน .env / secret manager)
+      
+      # กุญแจลับเซ็น JWT — ดึงจาก .env (⚠️ production ต้องเป็นค่าสุ่มยาว ๆ)
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
     depends_on:
       db:
@@ -22,14 +26,16 @@ services:
   db:
     image: postgres:16-alpine
     container_name: catice-db
+    ports:
+      - "${DATABASE_PORT:-5432}:5432" # เปิดให้ host ต่อ (เช่นรัน binary นอก docker / DBeaver)
     environment:
-      POSTGRES_USER: catice
-      POSTGRES_PASSWORD: catice
-      POSTGRES_DB: catice
+      POSTGRES_USER: ${POSTGRES_USER:-catice}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-catice}
+      POSTGRES_DB: ${POSTGRES_DB:-catice}
     volumes:
       - catice-pgdata:/var/lib/postgresql/data # ⭐ volume ถาวร — restart/redeploy แล้ว user ไม่หาย
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U catice -d catice"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-catice} -d ${POSTGRES_DB:-catice}"]
       interval: 3s
       timeout: 3s
       retries: 10

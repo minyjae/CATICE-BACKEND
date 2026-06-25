@@ -6,6 +6,7 @@ package router
 import (
 	"encoding/json"
 	"math/rand"
+	"strings"
 
 	"github/minyjae/catice/internal/auth/domain"
 	"github/minyjae/catice/internal/auth/service"
@@ -22,11 +23,22 @@ type Router struct {
 	rooms     *room.Manager
 	tasks     *service.TaskStore  // task ลง DB ผ่าน service → ทุก client เห็นชุดเดียวกัน
 	boards    *service.BoardStore // board (kanban หลายใบ) ลง DB
+	chat      *service.ChatStore  // ข้อความแชต (room/all/private) ลง DB + ส่งประวัติตอน join
 	positions presence.Store      // ตำแหน่ง client ถาวร (Redis) → reconnect/refresh/logout แล้วยืนที่เดิม
+
+	// presence — แตะเฉพาะใน router goroutine เดียว → ไม่ต้อง lock (เหมือน room.Manager)
+	online map[string]bool   // userId → มี connection อยู่ในระบบ (ข้ามห้อง)
+	inCall map[string]bool   // userId → กำลังเปิดสายวิดีโอ (busy)
+	roomOf map[string]string // userId → ห้องปัจจุบัน (ส่งใน presence ให้รู้ว่าใครอยู่ห้องไหนข้ามห้อง)
 }
 
-func New(h *hub.Hub, rm *room.Manager, tasks *service.TaskStore, boards *service.BoardStore, positions presence.Store) *Router {
-	return &Router{hub: h, rooms: rm, tasks: tasks, boards: boards, positions: positions}
+func New(h *hub.Hub, rm *room.Manager, tasks *service.TaskStore, boards *service.BoardStore, chat *service.ChatStore, positions presence.Store) *Router {
+	return &Router{
+		hub: h, rooms: rm, tasks: tasks, boards: boards, chat: chat, positions: positions,
+		online: make(map[string]bool),
+		inCall: make(map[string]bool),
+		roomOf: make(map[string]string),
+	}
 }
 
 // Run วนรับ 2 อย่างจาก hub: เหตุการณ์เข้า/ออก และข้อความจาก client
@@ -46,6 +58,8 @@ func (rt *Router) Run() {
 func (rt *Router) handleEvent(ev hub.Event) {
 	switch ev.Kind {
 	case hub.Joined:
+		rt.roomOf[ev.ClientID] = ev.Room // track ห้องปัจจุบัน (ใช้ใน presence)
+
 		// 1) สร้างตัวตนในเกม — เฉพาะตอน "ยังไม่มีใน memory" เท่านั้น
 		//    (ถ้า reconnect/เปิดสายใหม่ของ user เดิม → คงตำแหน่งเดิมไว้ ไม่ spawn ทับ)
 		if _, exists := rt.rooms.Get(ev.Room, ev.ClientID); !exists {
@@ -63,7 +77,7 @@ func (rt *Router) handleEvent(ev hub.Event) {
 		//    me = ตำแหน่งที่เพิ่งกู้จาก Redis / สุ่มไว้ด้านบน → ส่งให้ client เกิดที่เดิม
 		me, _ := rt.rooms.Get(ev.Room, ev.ClientID)
 		if out, err := protocol.NewEnvelope(protocol.TypeWelcome, protocol.WelcomePayload{
-			ID: ev.ClientID, Room: ev.Room, X: me.X, Y: me.Y,
+			ID: ev.ClientID, Room: ev.Room, X: me.X, Y: me.Y, Sprite: me.Sprite,
 		}); err == nil {
 			rt.hub.SendTo(ev.Room, ev.ClientID, out)
 		}
@@ -97,12 +111,53 @@ func (rt *Router) handleEvent(ev hub.Event) {
 			}
 		}
 
+		// snapshot ประวัติแชต: ห้องนี้ + ทั้งหมด + DM ของ user นี้ (frontend แยกตาม scope + dedupe ด้วย mid)
+		for _, m := range rt.chat.History(ev.Room, ev.ClientID) {
+			if out, err := protocol.NewEnvelope(protocol.TypeChat, chatToBroadcast(m)); err == nil {
+				rt.hub.SendTo(ev.Room, ev.ClientID, out)
+			}
+		}
+
+		// snapshot presence: ใครออนไลน์/อยู่ในสายอยู่บ้าง → ให้คน join คนเดียว
+		for id := range rt.online {
+			if out, err := protocol.NewEnvelope(protocol.TypePresence, protocol.PresencePayload{
+				ID: id, Online: true, InCall: rt.inCall[id], Room: rt.roomOf[id],
+			}); err == nil {
+				rt.hub.SendTo(ev.Room, ev.ClientID, out)
+			}
+		}
+
+		// ถ้า online อยู่แล้ว = นี่คือ switch_room (ไม่ยิง Online ใหม่) → บอกทุกคนว่าย้ายห้อง
+		// (connect ครั้งแรก online ยังเป็น false → ปล่อยให้ event Online ที่ตามมา broadcast เอง)
+		if rt.online[ev.ClientID] {
+			rt.broadcastPresence(ev.ClientID)
+		}
+
 	case hub.Left:
 		// ลบ state + บอกทุกคนว่าคนนี้ออกไปแล้ว
 		rt.rooms.Remove(ev.Room, ev.ClientID)
 		if out, err := protocol.NewEnvelope(protocol.TypeLeave, protocol.LeavePayload{ID: ev.ClientID}); err == nil {
 			rt.hub.Broadcast(ev.Room, out)
 		}
+
+	case hub.Online:
+		rt.online[ev.ClientID] = true
+		rt.broadcastPresence(ev.ClientID)
+
+	case hub.Offline:
+		delete(rt.online, ev.ClientID)
+		delete(rt.inCall, ev.ClientID)
+		delete(rt.roomOf, ev.ClientID) // ลบก่อน broadcast → presence offline ไม่มี room (omitempty)
+		rt.broadcastPresence(ev.ClientID)
+	}
+}
+
+// broadcastPresence ส่งสถานะล่าสุดของ user คนหนึ่งให้ทุก client ทุกห้อง
+func (rt *Router) broadcastPresence(id string) {
+	if out, err := protocol.NewEnvelope(protocol.TypePresence, protocol.PresencePayload{
+		ID: id, Online: rt.online[id], InCall: rt.inCall[id], Room: rt.roomOf[id],
+	}); err == nil {
+		rt.hub.BroadcastAll(out)
 	}
 }
 
@@ -120,7 +175,12 @@ func (rt *Router) handleMessage(in hub.Inbound) {
 		if json.Unmarshal(env.Payload, &p) != nil {
 			return
 		}
-		rt.updatePlayer(in.Room, in.ClientID, func(pl *room.Player) { pl.Name = p.Name }, protocol.TypeJoin)
+		rt.updatePlayer(in.Room, in.ClientID, func(pl *room.Player) {
+			pl.Name = p.Name
+			if p.Sprite != "" { // ว่าง → คง sprite เดิม (กันทับค่าที่กู้จาก Redis ตอน reconnect)
+				pl.Sprite = normalizeSprite(p.Sprite)
+			}
+		}, protocol.TypeJoin)
 
 	case protocol.TypeMove:
 		var p protocol.MovePayload
@@ -145,23 +205,69 @@ func (rt *Router) handleMessage(in hub.Inbound) {
 		if json.Unmarshal(env.Payload, &p) != nil {
 			return
 		}
+		if strings.TrimSpace(p.Text) == "" {
+			return // ไม่เก็บ/ส่งข้อความว่าง
+		}
+		scope := p.Scope
+		if scope == "" {
+			scope = "room" // ดีฟอลต์
+		}
+		if scope == "private" && p.To == "" {
+			return // private ต้องมีปลายทาง
+		}
 		pl, _ := rt.rooms.Get(in.Room, in.ClientID) // เอาชื่อผู้ส่งมาแนบ
-		out, err := protocol.NewEnvelope(protocol.TypeChat, protocol.ChatBroadcast{
-			Scope: p.Scope, ID: in.ClientID, Name: pl.Name, To: p.To, Text: p.Text,
-		})
+
+		// บันทึกลง DB → ได้ id + เวลา (room เก็บเฉพาะ scope=room)
+		msgRoom := ""
+		if scope == "room" {
+			msgRoom = in.Room
+		}
+		msg := rt.chat.Record(scope, msgRoom, in.ClientID, pl.Name, p.To, p.Text)
+
+		out, err := protocol.NewEnvelope(protocol.TypeChat, chatToBroadcast(msg))
 		if err != nil {
 			return
 		}
-		switch p.Scope {
+		switch scope {
 		case "all": // ทั้งหมด → ทุกคนทุกห้อง
 			rt.hub.BroadcastAll(out)
 		case "private": // ส่วนตัว → ปลายทาง + echo กลับให้ผู้ส่งเห็นเอง
-			if p.To == "" {
-				return
-			}
 			rt.hub.SendToUser(p.To, out)
 			rt.hub.SendToUser(in.ClientID, out)
-		default: // "room"/ว่าง → เฉพาะห้องนี้
+		default: // room → เฉพาะห้องนี้
+			rt.hub.Broadcast(in.Room, out)
+		}
+
+	case protocol.TypeCallStatus:
+		// client รายงานสถานะกล้องตัวเอง (online ↔ in-call) → อัปเดต + broadcast presence
+		var p protocol.CallStatusPayload
+		if json.Unmarshal(env.Payload, &p) != nil {
+			return
+		}
+		if p.InCall {
+			rt.inCall[in.ClientID] = true
+		} else {
+			delete(rt.inCall, in.ClientID)
+		}
+		rt.broadcastPresence(in.ClientID)
+
+	case protocol.TypeSpriteChange:
+		// เปลี่ยนตัวละคร → เก็บลง state + Redis แล้ว relay ทั้งห้อง (id เติมจาก JWT ไม่เชื่อ client)
+		var p protocol.SpriteChangePayload
+		if json.Unmarshal(env.Payload, &p) != nil {
+			return
+		}
+		sprite := normalizeSprite(p.Sprite)
+		pl, ok := rt.rooms.Get(in.Room, in.ClientID)
+		if !ok {
+			pl = room.Player{ID: in.ClientID}
+		}
+		pl.Sprite = sprite
+		rt.rooms.Add(in.Room, pl)
+		rt.positions.Save(in.Room, pl) // persist → reconnect แล้วได้ตัวเดิม
+		if out, err := protocol.NewEnvelope(protocol.TypeSpriteChange, protocol.SpriteChangePayload{
+			ID: in.ClientID, Sprite: sprite,
+		}); err == nil {
 			rt.hub.Broadcast(in.Room, out)
 		}
 
@@ -274,6 +380,24 @@ func (rt *Router) handleMessage(in hub.Inbound) {
 		if out, err := protocol.NewEnvelope(protocol.TypeTaskDelete, p); err == nil {
 			rt.hub.Broadcast(in.Room, out)
 		}
+	}
+}
+
+// normalizeSprite จำกัด sprite ให้เป็นค่าที่รองรับ — ค่าอื่น/ว่าง → "player"
+func normalizeSprite(s string) string {
+	switch s {
+	case "player", "adventurer", "soldier", "cat":
+		return s
+	default:
+		return "player"
+	}
+}
+
+// chatToBroadcast แปลง domain.Message → payload ที่ส่งให้ client (live + ประวัติใช้ตัวเดียวกัน)
+func chatToBroadcast(m domain.Message) protocol.ChatBroadcast {
+	return protocol.ChatBroadcast{
+		Mid: m.ID, Ts: m.CreatedAt, Scope: m.Scope,
+		ID: m.FromID, Name: m.FromName, To: m.To, Text: m.Text,
 	}
 }
 

@@ -31,3 +31,12 @@ type BoardRepository interface {
 	ByID(id string) (domain.Board, bool)
 	All() []domain.Board
 }
+
+// MessageRepository = สัญญาของที่เก็บข้อความแชต (impl อยู่ที่ message.go)
+// ประวัติคืนแบบเรียงเวลาจากเก่า→ใหม่ (asc) เอา N ข้อความล่าสุด
+type MessageRepository interface {
+	Create(m domain.Message) error
+	RoomHistory(room string, limit int) []domain.Message      // chat "ห้องนี้" ของห้องหนึ่ง
+	AllHistory(limit int) []domain.Message                    // chat "ทั้งหมด"
+	PrivateHistory(userID string, limit int) []domain.Message // DM ที่ user นี้เกี่ยวข้อง (ส่ง/รับ)
+}
