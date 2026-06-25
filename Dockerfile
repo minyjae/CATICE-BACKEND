@@ -28,4 +28,3 @@ COPY --from=build /bin/catice /app/catice
 
 EXPOSE 8080
 ENTRYPOINT ["/app/catice"]
-</content>
