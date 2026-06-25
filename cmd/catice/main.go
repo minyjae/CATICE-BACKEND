@@ -83,9 +83,26 @@ func main() {
 	http.Handle("/", http.FileServer(http.Dir("web")))
 
 	log.Printf("server listening on http://localhost%s  (ws: %s/ws)", cfg.Addr, cfg.Addr)
-	if err := http.ListenAndServe(cfg.Addr, nil); err != nil {
+	// หุ้มทุก route ด้วย CORS → frontend คนละโดเมน (เช่น Railway) เรียกข้ามโดเมนได้
+	if err := http.ListenAndServe(cfg.Addr, withCORS(http.DefaultServeMux)); err != nil {
 		log.Fatal("ListenAndServe:", err)
 	}
+}
+
+// withCORS หุ้ม handler ให้ตอบ CORS — รองรับ frontend ที่ host คนละโดเมนกับ backend
+// auth ใช้ Bearer token ใน header (ไม่ใช่ cookie) → Allow-Origin "*" ใช้ได้ปลอดภัย
+// (WS ไม่ผ่าน preflight; upgrader.CheckOrigin คุม origin ของ WS เอง)
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		if r.Method == http.MethodOptions { // ตอบ preflight ทันที ไม่ต้องส่งต่อ
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // mustDB เปิดการเชื่อมต่อ Postgres (GORM) — บังคับต้องมี DATABASE_URL

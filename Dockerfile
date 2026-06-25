@@ -6,14 +6,20 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
-# คอมไพล์เป็น static binary (CGO_ENABLED=0 → ไม่ต้องพึ่ง libc → ใส่ใน distroless ได้)
+# คอมไพล์เป็น static binary
+#   CGO_ENABLED=0 → ไม่พึ่ง libc → ใส่ใน distroless/static ได้
+#   -trimpath     → ตัด path เครื่อง build ออกจาก binary (reproducible + ไม่หลุด path เครื่อง)
+#   -ldflags "-s -w" → ตัด symbol/debug table → binary เล็กลง
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/catice ./cmd/catice
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /bin/catice ./cmd/catice
 
 # ---------- run stage ----------
-FROM gcr.io/distroless/static-debian12
+# distroless/static = ไม่มี shell/package manager → ผิวสัมผัสโจมตีน้อย
+# :nonroot = รันด้วย user ที่ไม่ใช่ root (uid 65532) → ปลอดภัยขึ้น
+FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app
 COPY --from=build /bin/catice /app/catice
+
 # backend ตัวนี้เสิร์ฟแค่ API/WebSocket — frontend อยู่ที่ Vite (dev) หรือ static host (prod)
 # main.go มี FileServer("web") อยู่ แต่ถ้าไม่มี web/ ก็แค่ตอบ 404 ที่ "/" (ไม่ crash)
 # ถ้าจะให้ container เสิร์ฟ frontend เองแบบ standalone:
@@ -22,3 +28,4 @@ COPY --from=build /bin/catice /app/catice
 
 EXPOSE 8080
 ENTRYPOINT ["/app/catice"]
+</content>

@@ -3,5 +3,12 @@ docs
 *.md
 tmp
 .claude
+# secrets — อย่าให้หลุดเข้า build context / image layer (env ส่งผ่าน docker-compose แทน)
+.env
+.env.*
+!.env.example
+# build artifacts ของ Go (ถ้ามี build ในเครื่อง)
+/bin
+*.exe
 # web/ เก็บไว้ (เป็น frontend ที่ build แล้ว ให้ container เสิร์ฟตอน prod)
 # node_modules ไม่มีใน Catice2 (อยู่ใน catice-frontend ซึ่งเป็น sibling นอก build context)
