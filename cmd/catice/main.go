@@ -46,11 +46,11 @@ func main() {
 	positions := presenceStore(cfg)                 // ตำแหน่ง client ถาวร (Redis) → reconnect/refresh/logout แล้วยืนที่เดิม
 
 	// ---- ชั้น transport/state (dependency ไหลทางเดียว: router → hub/room/...) ----
-	h := hub.New()                                            // ชั้น transport (การเชื่อมต่อ)
-	go h.Run()                                                //
-	rm := room.NewManager()                                   // ชั้น state (ตำแหน่งผู้เล่น in-memory)
+	h := hub.New()                                                       // ชั้น transport (การเชื่อมต่อ)
+	go h.Run()                                                           //
+	rm := room.NewManager()                                              // ชั้น state (ตำแหน่งผู้เล่น in-memory)
 	rt := router.New(h, rm, taskStore, boardStore, chatStore, positions) // ตัวสั่งการ: ดูด hub แล้ว dispatch
-	go rt.Run()                                               //
+	go rt.Run()                                                          //
 
 	// ---- auth (handler) ----
 	authH := handler.NewAuthHandler(service.NewStore(usersRepo), service.NewTokens(cfg.JWTSecret))
@@ -64,12 +64,14 @@ func main() {
 	// route /ws → เช็ค JWT (ต้อง login ก่อน) → upgrade → register เข้า hub
 	// browser ตั้ง header บน WebSocket handshake ไม่ได้ → ส่ง token ผ่าน query: /ws?token=<jwt>
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		userID, ok := authH.UserIDFromRequest(r) // แกะ JWT → userID
+		// ตรวจ JWT + ยืนยันว่า user ยังมีอยู่ใน DB (ไม่ใช่แค่ลายเซ็น)
+		// กัน ghost: token ของ user ที่ถูกลบไปแล้ว (เช่นหลัง down -v) ต่อ /ws ไม่ได้
+		user, ok := authH.UserFromRequest(r)
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		hub.ServeWs(h, w, r, userID) // ส่ง id คงที่เข้าไป
+		hub.ServeWs(h, w, r, user.ID) // ส่ง id คงที่เข้าไป
 	})
 
 	// route ทดสอบ
