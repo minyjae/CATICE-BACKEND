@@ -23,8 +23,7 @@ func (h *AuthHandler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "ยังไม่ได้เข้าสู่ระบบ"})
 			return
 		}
-		ctx := context.WithValue(r.Context(), userCtxKey, u)
-		next(w, r.WithContext(ctx)) // ส่ง request ที่ "ติด User" ไว้ใน context
+		next(w, WithUser(r, u)) // ส่ง request ที่ "ติด User" ไว้ใน context
 	}
 }
 
@@ -32,4 +31,10 @@ func (h *AuthHandler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 func UserOf(r *http.Request) (domain.User, bool) {
 	u, ok := r.Context().Value(userCtxKey).(domain.User)
 	return u, ok
+}
+
+// WithUser ฝัง User ลง context แบบเดียวกับที่ RequireAuth ทำ — export ไว้ให้ test ยิง handler
+// ตรง ๆ ด้วย request ที่จำลองผู้ใช้ login แล้ว โดยไม่ต้องพึ่ง JWT จริง
+func WithUser(r *http.Request, u domain.User) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), userCtxKey, u))
 }

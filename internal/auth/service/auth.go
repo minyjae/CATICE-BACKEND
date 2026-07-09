@@ -86,11 +86,29 @@ func (s *Store) ListUsers() []domain.User {
 	return s.repo.All()
 }
 
+// SetManager ตั้ง ManagerID ให้ user (ใครเป็นผู้อนุมัติ leave/WFH ของเขา) — เฉพาะ HR ทำได้
+// managerID ว่างได้ (เคลียร์หัวหน้า → fallback ไปหา HR ตอนยื่นคำขอ)
+func (s *Store) SetManager(callerRole domain.Role, userID, managerID string) (domain.User, error) {
+	if callerRole != domain.RoleHR {
+		return domain.User{}, domain.ErrForbidden
+	}
+	u, ok := s.repo.ByID(userID)
+	if !ok {
+		return domain.User{}, domain.ErrUserNotFound
+	}
+	u.ManagerID = managerID
+	if err := s.repo.Update(u); err != nil {
+		return domain.User{}, err
+	}
+	return u, nil
+}
+
 // ===================== JWT =====================
 
 // Tokens ออก/ตรวจ JWT (HS256) แบบ stateless — แทน session store แบบ in-memory เดิม
 // flow: login สำเร็จ → Create(userID) ได้ JWT → client เก็บไว้ (เช่น localStorage)
-//        ทุก request แนบ "Authorization: Bearer <jwt>" → UserID(jwt) → รู้ว่าใคร
+//
+//	ทุก request แนบ "Authorization: Bearer <jwt>" → UserID(jwt) → รู้ว่าใคร
 //
 // stateless = server ไม่เก็บ state เลย → รอด restart, scale หลาย instance ได้
 // แลกกับ: revoke token ทันทีไม่ได้ (ใช้ได้จนหมดอายุ) → logout = ฝั่ง client ทิ้ง token เอง

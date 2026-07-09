@@ -29,12 +29,56 @@ type RegisterResponse struct {
 	Token   string `json:"token,omitempty"` // JWT — สมัครเสร็จ login ให้เลย
 }
 
-// PublicUser = ข้อมูล user แบบ "เปิดเผยได้" สำหรับทำ selector มอบหมาย task
-//   - Name : ส่วนหน้า @ ของอีเมล (ไม่หลุด email เต็ม/hash)
+// PublicUser = ข้อมูล user แบบ "เปิดเผยได้" สำหรับทำ selector มอบหมาย task / แสดง org chart
+//   - Name      : ส่วนหน้า @ ของอีเมล (ไม่หลุด email เต็ม/hash)
+//   - ManagerID : ใครเป็นหัวหน้า/ผู้อนุมัติของ user นี้
 type PublicUser struct {
-	ID   string `json:"id"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Role      Role   `json:"role"`
+	ManagerID string `json:"manager_id,omitempty"`
+}
+
+// SetManagerPayload = ตั้ง/เคลียร์หัวหน้าของ user คนหนึ่ง (HR เท่านั้น) — ManagerID ว่างได้ (เคลียร์)
+type SetManagerPayload struct {
+	ManagerID string `json:"manager_id"`
+}
+
+// ----- holiday: payload ที่รับจาก client -----
+
+type CreateHolidayPayload struct {
 	Name string `json:"name"`
-	Role Role   `json:"role"`
+	Date string `json:"date"` // YYYY-MM-DD
+}
+
+// ----- leave: payload ที่รับจาก client -----
+
+// CreateLeavePayload = ข้อมูลที่ใช้ยื่นคำขอลา — UserID ไม่อยู่ในนี้ (server เซ็ตจาก JWT)
+type CreateLeavePayload struct {
+	Type      LeaveType `json:"type"`
+	StartDate string    `json:"start_date"`
+	EndDate   string    `json:"end_date"`
+	Reason    string    `json:"reason"`
+}
+
+// ----- wfh: payload ที่รับจาก client -----
+
+type CreateWFHPayload struct {
+	Date   string `json:"date"`
+	Reason string `json:"reason"`
+}
+
+// ----- leave/wfh: payload ที่ใช้ตัดสินใจคำขอ (approver ใช้) -----
+
+type DecideRequestPayload struct {
+	Approve bool `json:"approve"`
+}
+
+// ----- diary: payload ที่รับจาก client -----
+
+type UpsertDiaryPayload struct {
+	Date    string `json:"date"`
+	Content string `json:"content"`
 }
 
 // ----- task: payload ที่รับจาก client -----

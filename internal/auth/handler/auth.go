@@ -115,9 +115,26 @@ func (h *AuthHandler) Users(w http.ResponseWriter, r *http.Request) {
 	users := h.store.ListUsers()
 	out := make([]domain.PublicUser, 0, len(users))
 	for _, u := range users {
-		out = append(out, domain.PublicUser{ID: u.ID, Name: nameFromEmail(u.Email), Role: u.Role})
+		out = append(out, domain.PublicUser{ID: u.ID, Name: nameFromEmail(u.Email), Role: u.Role, ManagerID: u.ManagerID})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// SetManager : PATCH /users/{id}/manager  body {manager_id} — ตั้ง/เคลียร์หัวหน้าของ user (เฉพาะ HR)
+func (h *AuthHandler) SetManager(w http.ResponseWriter, r *http.Request) {
+	caller, _ := UserOf(r) // RequireAuth การันตีว่ามีแล้ว
+	var p domain.SetManagerPayload
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "รูปแบบข้อมูลไม่ถูกต้อง"})
+		return
+	}
+
+	u, err := h.store.SetManager(caller.Role, r.PathValue("id"), p.ManagerID)
+	if err != nil {
+		writeJSON(w, statusForErr(err), map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, domain.PublicUser{ID: u.ID, Name: nameFromEmail(u.Email), Role: u.Role, ManagerID: u.ManagerID})
 }
 
 // ---------- helpers ----------
@@ -143,8 +160,25 @@ func statusForErr(err error) int {
 		return http.StatusConflict // 409
 	case errors.Is(err, domain.ErrBadCredentials):
 		return http.StatusUnauthorized // 401
-	case errors.Is(err, domain.ErrMissingFields), errors.Is(err, domain.ErrInvalidRole):
+	case errors.Is(err, domain.ErrMissingFields),
+		errors.Is(err, domain.ErrInvalidRole),
+		errors.Is(err, domain.ErrEmptyHolidayName),
+		errors.Is(err, domain.ErrEmptyLeaveType),
+		errors.Is(err, domain.ErrInvalidDateRange),
+		errors.Is(err, domain.ErrEmptyDiaryContent):
 		return http.StatusBadRequest // 400
+	case errors.Is(err, domain.ErrForbidden), errors.Is(err, domain.ErrNotApprover):
+		return http.StatusForbidden // 403
+	case errors.Is(err, domain.ErrUserNotFound), errors.Is(err, domain.ErrRequestNotFound):
+		return http.StatusNotFound // 404
+	case errors.Is(err, domain.ErrLeaveQuotaExceeded),
+		errors.Is(err, domain.ErrWFHWeeklyExceeded),
+		errors.Is(err, domain.ErrWFHMonthlyExceeded):
+		return http.StatusUnprocessableEntity // 422
+	case errors.Is(err, domain.ErrInvalidPolicy):
+		return http.StatusBadRequest // 400
+	case errors.Is(err, domain.ErrNoApprover), errors.Is(err, domain.ErrNotPending):
+		return http.StatusConflict // 409
 	default:
 		return http.StatusInternalServerError // 500
 	}

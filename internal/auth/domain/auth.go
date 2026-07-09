@@ -9,6 +9,7 @@ type Role string
 
 const (
 	RoleDeveloper Role = "developer"
+	RoleHR        Role = "hr"
 	RolePM        Role = "pm"
 	RolePO        Role = "po"
 	RoleCTO       Role = "cto"
@@ -18,22 +19,24 @@ const (
 // Valid เช็คว่า role ที่ส่งมาเป็นค่าที่รองรับไหม (กันส่งตำแหน่งมั่ว)
 func (r Role) Valid() bool {
 	switch r {
-	case RoleDeveloper, RolePM, RolePO, RoleCTO, RoleUXUI:
+	case RoleDeveloper, RoleHR, RolePM, RolePO, RoleCTO, RoleUXUI:
 		return true
 	}
 	return false
 }
 
 // User คือบัญชีผู้ใช้ (domain model)
-//   - ID       : รหัสคงที่ (ใช้เป็น client.id ในเกม — ไม่เปลี่ยนแม้ refresh)
-//   - Email    : ใช้ login
-//   - Role     : ตำแหน่ง
-//   - PassHash : รหัสผ่านที่ hash แล้ว (json:"-" → ไม่หลุดออก API เด็ดขาด)
+//   - ID        : รหัสคงที่ (ใช้เป็น client.id ในเกม — ไม่เปลี่ยนแม้ refresh)
+//   - Email     : ใช้ login
+//   - Role      : ตำแหน่ง
+//   - PassHash  : รหัสผ่านที่ hash แล้ว (json:"-" → ไม่หลุดออก API เด็ดขาด)
+//   - ManagerID : id ของหัวหน้าที่อนุมัติ leave/WFH ของ user นี้ (ว่างได้ถ้าไม่มีหัวหน้า — fallback ไป HR)
 type User struct {
-	ID       string `json:"id"`
-	Email    string `json:"email"`
-	Role     Role   `json:"role"`
-	PassHash string `json:"-"`
+	ID        string `json:"id"`
+	Email     string `json:"email"`
+	Role      Role   `json:"role"`
+	PassHash  string `json:"-"`
+	ManagerID string `json:"manager_id,omitempty"`
 }
 
 // errors ที่ register/login อาจคืน — อยู่ใน domain เพื่อให้ทุก layer (repository/service/handler)
@@ -43,4 +46,6 @@ var (
 	ErrInvalidRole    = errors.New("role ไม่ถูกต้อง")
 	ErrEmailTaken     = errors.New("email นี้ถูกใช้แล้ว")
 	ErrBadCredentials = errors.New("email หรือ password ไม่ถูกต้อง")
+	ErrForbidden      = errors.New("ไม่มีสิทธิ์ทำรายการนี้")
+	ErrUserNotFound   = errors.New("ไม่พบ user")
 )

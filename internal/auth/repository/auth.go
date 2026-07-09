@@ -11,10 +11,11 @@ import (
 // UserModel = "persistence model" ของ GORM (รูปร่างตาราง users ใน Postgres)
 // แยกจาก domain.User โดยตั้งใจ — ORM tag/รายละเอียด DB ไม่รั่วเข้า domain
 type UserModel struct {
-	ID       string `gorm:"primaryKey"`
-	Email    string `gorm:"uniqueIndex;not null"` // unique → email ซ้ำไม่ได้ (DB การันตี)
-	Role     string `gorm:"not null"`
-	PassHash string `gorm:"not null"`
+	ID        string `gorm:"primaryKey"`
+	Email     string `gorm:"uniqueIndex;not null"` // unique → email ซ้ำไม่ได้ (DB การันตี)
+	Role      string `gorm:"not null"`
+	PassHash  string `gorm:"not null"`
+	ManagerID string `gorm:"index"` // id ของหัวหน้า (self-reference) — ว่างได้
 }
 
 // TableName บังคับชื่อตารางเป็น "users" (ไม่ให้ GORM เดา pluralize เอง)
@@ -22,12 +23,12 @@ func (UserModel) TableName() string { return "users" }
 
 // toDomain : persistence model → domain User
 func toDomain(m UserModel) domain.User {
-	return domain.User{ID: m.ID, Email: m.Email, Role: domain.Role(m.Role), PassHash: m.PassHash}
+	return domain.User{ID: m.ID, Email: m.Email, Role: domain.Role(m.Role), PassHash: m.PassHash, ManagerID: m.ManagerID}
 }
 
 // fromDomain : domain User → persistence model
 func fromDomain(u domain.User) UserModel {
-	return UserModel{ID: u.ID, Email: u.Email, Role: string(u.Role), PassHash: u.PassHash}
+	return UserModel{ID: u.ID, Email: u.Email, Role: string(u.Role), PassHash: u.PassHash, ManagerID: u.ManagerID}
 }
 
 // gormUsers = impl ของ UsersRepository ที่เก็บลง Postgres ผ่าน GORM (ถาวร — รอด restart ผ่าน volume)
@@ -61,6 +62,12 @@ func (g *gormUsers) ByEmail(email string) (domain.User, bool) {
 		return domain.User{}, false // รวม gorm.ErrRecordNotFound → ไม่เจอ
 	}
 	return toDomain(m), true
+}
+
+// Update เซฟทับทั้งใบ (service อ่านของเดิมมาก่อนแล้วแก้) — ตอนนี้ใช้ตั้ง ManagerID เป็นหลัก
+func (g *gormUsers) Update(u domain.User) error {
+	m := fromDomain(u)
+	return g.db.Save(&m).Error
 }
 
 func (g *gormUsers) ByID(id string) (domain.User, bool) {
