@@ -86,11 +86,97 @@ func (s *Store) ListUsers() []domain.User {
 	return s.repo.All()
 }
 
+// SetManager ตั้ง ManagerID ให้ user (ใครเป็นผู้อนุมัติ leave/WFH ของเขา) — เฉพาะ HR ทำได้
+// managerID ว่างได้ (เคลียร์หัวหน้า → fallback ไปหา HR ตอนยื่นคำขอ)
+func (s *Store) SetManager(callerRole domain.Role, userID, managerID string) (domain.User, error) {
+	if callerRole != domain.RoleHR {
+		return domain.User{}, domain.ErrForbidden
+	}
+	u, ok := s.repo.ByID(userID)
+	if !ok {
+		return domain.User{}, domain.ErrUserNotFound
+	}
+	u.ManagerID = managerID
+	if err := s.repo.Update(u); err != nil {
+		return domain.User{}, err
+	}
+	return u, nil
+}
+
+// UpdateProfile แก้ไขโปรไฟล์พนักงาน (partial update) — เฉพาะ HR ทำได้
+// field ที่เป็น nil ใน payload = ไม่แก้ field นั้น
+func (s *Store) UpdateProfile(callerRole domain.Role, userID string, p domain.UpdateProfilePayload) (domain.User, error) {
+	if callerRole != domain.RoleHR {
+		return domain.User{}, domain.ErrForbidden
+	}
+	u, ok := s.repo.ByID(userID)
+	if !ok {
+		return domain.User{}, domain.ErrUserNotFound
+	}
+	if p.FirstName != nil {
+		u.FirstName = *p.FirstName
+	}
+	if p.LastName != nil {
+		u.LastName = *p.LastName
+	}
+	if p.Phone != nil {
+		u.Phone = *p.Phone
+	}
+	if p.BirthDate != nil {
+		u.BirthDate = *p.BirthDate
+	}
+	if p.Address != nil {
+		u.Address = *p.Address
+	}
+	if p.Salary != nil {
+		u.Salary = p.Salary
+	}
+	if p.StartDate != nil {
+		u.StartDate = *p.StartDate
+	}
+	if err := s.repo.Update(u); err != nil {
+		return domain.User{}, err
+	}
+	return u, nil
+}
+
+// ChangeRole เปลี่ยนตำแหน่งพนักงาน (เลื่อนขั้น/ย้ายแผนก) — เฉพาะ HR ทำได้
+func (s *Store) ChangeRole(callerRole domain.Role, userID string, newRole domain.Role) (domain.User, error) {
+	if callerRole != domain.RoleHR {
+		return domain.User{}, domain.ErrForbidden
+	}
+	if !newRole.Valid() {
+		return domain.User{}, domain.ErrInvalidRole
+	}
+	u, ok := s.repo.ByID(userID)
+	if !ok {
+		return domain.User{}, domain.ErrUserNotFound
+	}
+	u.Role = newRole
+	if err := s.repo.Update(u); err != nil {
+		return domain.User{}, err
+	}
+	return u, nil
+}
+
+// DeleteUser soft-delete พนักงานออกจากระบบ (ลาออก/เลิกจ้าง) — เฉพาะ HR ทำได้
+// user login ไม่ได้อีก, ไม่ปรากฏใน All() แต่ข้อมูล leave/WFH/diary ยังอยู่เป็น audit trail
+func (s *Store) DeleteUser(callerRole domain.Role, userID string) error {
+	if callerRole != domain.RoleHR {
+		return domain.ErrForbidden
+	}
+	if _, ok := s.repo.ByID(userID); !ok {
+		return domain.ErrUserNotFound
+	}
+	return s.repo.Delete(userID)
+}
+
 // ===================== JWT =====================
 
 // Tokens ออก/ตรวจ JWT (HS256) แบบ stateless — แทน session store แบบ in-memory เดิม
 // flow: login สำเร็จ → Create(userID) ได้ JWT → client เก็บไว้ (เช่น localStorage)
-//        ทุก request แนบ "Authorization: Bearer <jwt>" → UserID(jwt) → รู้ว่าใคร
+//
+//	ทุก request แนบ "Authorization: Bearer <jwt>" → UserID(jwt) → รู้ว่าใคร
 //
 // stateless = server ไม่เก็บ state เลย → รอด restart, scale หลาย instance ได้
 // แลกกับ: revoke token ทันทีไม่ได้ (ใช้ได้จนหมดอายุ) → logout = ฝั่ง client ทิ้ง token เอง

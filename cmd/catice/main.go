@@ -40,10 +40,37 @@ func main() {
 	if err != nil {
 		log.Fatalf("migrate ตาราง messages ไม่ได้: %v", err)
 	}
+	holidaysRepo, err := repository.NewGormHolidays(db)
+	if err != nil {
+		log.Fatalf("migrate ตาราง holidays ไม่ได้: %v", err)
+	}
+	leaveRepo, err := repository.NewGormLeaves(db)
+	if err != nil {
+		log.Fatalf("migrate ตาราง leave_requests ไม่ได้: %v", err)
+	}
+	wfhRepo, err := repository.NewGormWFH(db)
+	if err != nil {
+		log.Fatalf("migrate ตาราง wfh_requests ไม่ได้: %v", err)
+	}
+	diaryRepo, err := repository.NewGormDiaries(db)
+	if err != nil {
+		log.Fatalf("migrate ตาราง daily_diaries ไม่ได้: %v", err)
+	}
+	policyRepo, err := repository.NewGormPolicy(db)
+	if err != nil {
+		log.Fatalf("migrate ตาราง leave_policy ไม่ได้: %v", err)
+	}
 	taskStore := service.NewTaskStore(tasksRepo)    // task ทั้งหมดไปทาง WS (router) — ดู create/move/update/delete ใน message_router
 	boardStore := service.NewBoardStore(boardsRepo) // board (kanban หลายใบ) ผ่าน WS เช่นกัน
 	chatStore := service.NewChatStore(messagesRepo) // แชต room/all/private เก็บลง DB + ส่งประวัติตอน join
 	positions := presenceStore(cfg)                 // ตำแหน่ง client ถาวร (Redis) → reconnect/refresh/logout แล้วยืนที่เดิม
+
+	// ---- HR module (REST ล้วน ไม่ผ่าน WS — ดู CLAUDE.md เหตุผลที่ไม่ใช้ realtime layer) ----
+	holidayStore := service.NewHolidayStore(holidaysRepo)
+	policyStore := service.NewPolicyStore(policyRepo)
+	leaveStore := service.NewLeaveStore(leaveRepo, usersRepo, policyStore)
+	wfhStore := service.NewWFHStore(wfhRepo, usersRepo, policyStore)
+	diaryStore := service.NewDiaryStore(diaryRepo, usersRepo)
 
 	// ---- ชั้น transport/state (dependency ไหลทางเดียว: router → hub/room/...) ----
 	h := hub.New()                                                       // ชั้น transport (การเชื่อมต่อ)
@@ -57,9 +84,48 @@ func main() {
 	http.HandleFunc("/register", authH.Register)
 	http.HandleFunc("/login", authH.Login)
 	http.HandleFunc("/logout", authH.Logout)
-	http.HandleFunc("/me", authH.RequireAuth(authH.Me))       // ต้อง login ก่อน (middleware เช็ค JWT)
-	http.HandleFunc("/users", authH.RequireAuth(authH.Users)) // รายชื่อ user ทั้งหมด → selector มอบหมาย task
+	http.HandleFunc("/me", authH.RequireAuth(authH.Me))                               // ต้อง login ก่อน (middleware เช็ค JWT)
+	http.HandleFunc("/users", authH.RequireAuth(authH.Users))                         // รายชื่อ user ทั้งหมด → selector มอบหมาย task
+	http.HandleFunc("PATCH /users/{id}/manager", authH.RequireAuth(authH.SetManager)) // ตั้ง/เคลียร์หัวหน้า (เฉพาะ HR)
+
+	// ---- HR user management (REST) ----
+	umH := handler.NewUserManagementHandler(service.NewStore(usersRepo))
+	http.HandleFunc("GET /hr/users", authH.RequireAuth(umH.ListAll))
+	http.HandleFunc("GET /hr/users/{id}", authH.RequireAuth(umH.GetOne))
+	http.HandleFunc("PATCH /hr/users/{id}", authH.RequireAuth(umH.UpdateProfile))
+	http.HandleFunc("PATCH /hr/users/{id}/role", authH.RequireAuth(umH.ChangeRole))
+	http.HandleFunc("DELETE /hr/users/{id}", authH.RequireAuth(umH.DeleteUser))
+
 	// task: สร้าง/ย้าย/แก้/ลบ ทั้งหมดไปทาง WS (/ws) → realtime + บันทึกลง DB (ดู internal/router/message_router.go)
+
+	// ---- HR module (REST) ----
+	holidayH := handler.NewHolidayHandler(holidayStore)
+	http.HandleFunc("GET /holidays", authH.RequireAuth(holidayH.List))
+	http.HandleFunc("POST /holidays", authH.RequireAuth(holidayH.Create))        // เฉพาะ HR
+	http.HandleFunc("DELETE /holidays/{id}", authH.RequireAuth(holidayH.Delete)) // เฉพาะ HR
+
+	leaveH := handler.NewLeaveHandler(leaveStore)
+	http.HandleFunc("POST /leaves", authH.RequireAuth(leaveH.Create))
+	http.HandleFunc("GET /leaves/mine", authH.RequireAuth(leaveH.Mine))
+	http.HandleFunc("GET /leaves/pending", authH.RequireAuth(leaveH.Pending))
+	http.HandleFunc("POST /leaves/{id}/approve", authH.RequireAuth(leaveH.Approve))
+	http.HandleFunc("POST /leaves/{id}/reject", authH.RequireAuth(leaveH.Reject))
+
+	wfhH := handler.NewWFHHandler(wfhStore)
+	http.HandleFunc("POST /wfh", authH.RequireAuth(wfhH.Create))
+	http.HandleFunc("GET /wfh/mine", authH.RequireAuth(wfhH.Mine))
+	http.HandleFunc("GET /wfh/pending", authH.RequireAuth(wfhH.Pending))
+	http.HandleFunc("POST /wfh/{id}/approve", authH.RequireAuth(wfhH.Approve))
+	http.HandleFunc("POST /wfh/{id}/reject", authH.RequireAuth(wfhH.Reject))
+
+	policyH := handler.NewPolicyHandler(policyStore)
+	http.HandleFunc("GET /policy", authH.RequireAuth(policyH.Get))
+	http.HandleFunc("PUT /policy", authH.RequireAuth(policyH.Update)) // เฉพาะ HR
+
+	diaryH := handler.NewDiaryHandler(diaryStore)
+	http.HandleFunc("POST /diary", authH.RequireAuth(diaryH.Upsert))
+	http.HandleFunc("GET /diary/mine", authH.RequireAuth(diaryH.Mine))
+	http.HandleFunc("GET /diary", authH.RequireAuth(diaryH.OfUser)) // ?user_id=&date= — HR/manager ดูของลูกทีม
 
 	// route /ws → เช็ค JWT (ต้อง login ก่อน) → upgrade → register เข้า hub
 	// browser ตั้ง header บน WebSocket handshake ไม่ได้ → ส่ง token ผ่าน query: /ws?token=<jwt>
