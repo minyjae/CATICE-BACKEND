@@ -81,6 +81,42 @@ type UpsertDiaryPayload struct {
 	Content string `json:"content"`
 }
 
+// ----- hr user management -----
+
+// UpdateProfilePayload = ข้อมูลที่ HR ส่งมาแก้ไขโปรไฟล์พนักงาน
+// ทุก field เป็น pointer — ไม่ส่งมา (nil) = ไม่แก้ field นั้น (partial update)
+type UpdateProfilePayload struct {
+	FirstName *string  `json:"first_name"`
+	LastName  *string  `json:"last_name"`
+	Phone     *string  `json:"phone"`
+	BirthDate *string  `json:"birth_date"`
+	Address   *string  `json:"address"`
+	Salary    *float64 `json:"salary"`
+	StartDate *string  `json:"start_date"`
+}
+
+// ChangeRolePayload = เปลี่ยนตำแหน่งพนักงาน (HR ใช้ตอนเลื่อนขั้น)
+type ChangeRolePayload struct {
+	Role Role `json:"role"`
+}
+
+// HRUserView = ข้อมูล user เต็ม ๆ รวม sensitive fields (HR เท่านั้น)
+// แยกจาก PublicUser เพื่อไม่ให้ salary หลุดออก endpoint สาธารณะ
+type HRUserView struct {
+	ID        string   `json:"id"`
+	Email     string   `json:"email"`
+	Name      string   `json:"name"` // email prefix — compat กับ PublicUser
+	Role      Role     `json:"role"`
+	ManagerID string   `json:"manager_id,omitempty"`
+	FirstName string   `json:"first_name,omitempty"`
+	LastName  string   `json:"last_name,omitempty"`
+	Phone     string   `json:"phone,omitempty"`
+	BirthDate string   `json:"birth_date,omitempty"`
+	Address   string   `json:"address,omitempty"`
+	Salary    *float64 `json:"salary,omitempty"`
+	StartDate string   `json:"start_date,omitempty"`
+}
+
 // ----- task: payload ที่รับจาก client -----
 
 // CreateTaskPayload = ข้อมูลที่ใช้สร้าง task (router แปลงจาก WS task_create payload มาให้ service)

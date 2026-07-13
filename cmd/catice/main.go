@@ -87,6 +87,15 @@ func main() {
 	http.HandleFunc("/me", authH.RequireAuth(authH.Me))                               // ต้อง login ก่อน (middleware เช็ค JWT)
 	http.HandleFunc("/users", authH.RequireAuth(authH.Users))                         // รายชื่อ user ทั้งหมด → selector มอบหมาย task
 	http.HandleFunc("PATCH /users/{id}/manager", authH.RequireAuth(authH.SetManager)) // ตั้ง/เคลียร์หัวหน้า (เฉพาะ HR)
+
+	// ---- HR user management (REST) ----
+	umH := handler.NewUserManagementHandler(service.NewStore(usersRepo))
+	http.HandleFunc("GET /hr/users", authH.RequireAuth(umH.ListAll))
+	http.HandleFunc("GET /hr/users/{id}", authH.RequireAuth(umH.GetOne))
+	http.HandleFunc("PATCH /hr/users/{id}", authH.RequireAuth(umH.UpdateProfile))
+	http.HandleFunc("PATCH /hr/users/{id}/role", authH.RequireAuth(umH.ChangeRole))
+	http.HandleFunc("DELETE /hr/users/{id}", authH.RequireAuth(umH.DeleteUser))
+
 	// task: สร้าง/ย้าย/แก้/ลบ ทั้งหมดไปทาง WS (/ws) → realtime + บันทึกลง DB (ดู internal/router/message_router.go)
 
 	// ---- HR module (REST) ----

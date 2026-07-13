@@ -12,6 +12,7 @@ type UsersRepository interface {
 	ByEmail(email string) (domain.User, bool) // หาด้วย email (ใช้ตอน login)
 	ByID(id string) (domain.User, bool)       // หาด้วย id (JWT → user)
 	All() []domain.User                       // user ทั้งหมด (selector มอบหมาย task)
+	Delete(id string) error                   // soft delete (set deleted_at) — HR ใช้ตอน offboard พนักงาน
 }
 
 // TaskRepository = สัญญาของที่เก็บ task (impl อยู่ที่ task.go)

@@ -31,12 +31,20 @@ func (r Role) Valid() bool {
 //   - Role      : ตำแหน่ง
 //   - PassHash  : รหัสผ่านที่ hash แล้ว (json:"-" → ไม่หลุดออก API เด็ดขาด)
 //   - ManagerID : id ของหัวหน้าที่อนุมัติ leave/WFH ของ user นี้ (ว่างได้ถ้าไม่มีหัวหน้า — fallback ไป HR)
+//   - Salary    : *float64 (pointer แยก null กับ 0 ออกจากกัน — HR-sensitive)
 type User struct {
-	ID        string `json:"id"`
-	Email     string `json:"email"`
-	Role      Role   `json:"role"`
-	PassHash  string `json:"-"`
-	ManagerID string `json:"manager_id,omitempty"`
+	ID        string   `json:"id"`
+	Email     string   `json:"email"`
+	Role      Role     `json:"role"`
+	PassHash  string   `json:"-"`
+	ManagerID string   `json:"manager_id,omitempty"`
+	FirstName string   `json:"first_name,omitempty"`
+	LastName  string   `json:"last_name,omitempty"`
+	Phone     string   `json:"phone,omitempty"`
+	BirthDate string   `json:"birth_date,omitempty"`
+	Address   string   `json:"address,omitempty"`
+	Salary    *float64 `json:"salary,omitempty"`
+	StartDate string   `json:"start_date,omitempty"`
 }
 
 // errors ที่ register/login อาจคืน — อยู่ใน domain เพื่อให้ทุก layer (repository/service/handler)

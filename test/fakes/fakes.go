@@ -62,6 +62,11 @@ func (f *Users) All() []domain.User {
 	return out
 }
 
+func (f *Users) Delete(id string) error {
+	delete(f.byID, id)
+	return nil
+}
+
 var _ repository.UsersRepository = (*Users)(nil)
 
 // ===================== Holiday =====================
