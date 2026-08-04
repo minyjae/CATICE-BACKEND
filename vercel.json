@@ -6,11 +6,5 @@
     "env": {
       "GO_BUILD_FLAGS": "-trimpath -ldflags '-s -w'"
     }
-  },
-  "env": {
-    "DATABASE_URL": "@database-url",
-    "JWT_SECRET": "@jwt-secret",
-    "REDIS_ADDR": "@redis-addr",
-    "REDIS_PASSWORD": "@redis-password"
   }
 }
