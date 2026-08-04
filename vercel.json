@@ -1,6 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "go",
+  "services": {
+    "backend": {
+      "root": "."
+    }
+  },
   "regions": ["sin1"],
   "build": {
     "env": {
