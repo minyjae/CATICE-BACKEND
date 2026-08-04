@@ -25,11 +25,21 @@ type Config struct {
 func Load() Config {
 	return Config{
 		DatabaseURL:   os.Getenv("DATABASE_URL"),
-		Addr:          getenv("ADDR", ":8080"),
+		Addr:          serverAddr(),
 		JWTSecret:     getenv("JWT_SECRET", "dev-secret-change-me"),
 		RedisAddr:     os.Getenv("REDIS_ADDR"),
 		RedisPassword: os.Getenv("REDIS_PASSWORD"),
 	}
+}
+
+func serverAddr() string {
+	if v := os.Getenv("ADDR"); v != "" {
+		return v
+	}
+	if v := os.Getenv("PORT"); v != "" {
+		return ":" + v
+	}
+	return ":8080"
 }
 
 func getenv(key, def string) string {
