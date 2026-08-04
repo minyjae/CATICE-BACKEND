@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -216,15 +218,28 @@ func presenceStore(cfg config.Config) presence.Store {
 		return presence.Noop{}
 	}
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     cfg.RedisAddr,
-		Password: cfg.RedisPassword,
-		DB:       0,
+		Addr:      cfg.RedisAddr,
+		Password:  cfg.RedisPassword,
+		DB:        0,
+		TLSConfig: redisTLSConfig(cfg.RedisAddr),
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("เชื่อมต่อ Redis ไม่ได้: %v", err)
+		log.Printf("เชื่อมต่อ Redis ไม่ได้: %v → ไม่เก็บตำแหน่ง client ถาวร", err)
+		return presence.Noop{}
 	}
 	log.Println("ใช้ Redis เก็บตำแหน่ง client — reconnect/refresh/logout แล้วยืนที่เดิม")
 	return presence.NewRedis(rdb)
+}
+
+func redisTLSConfig(addr string) *tls.Config {
+	host := addr
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	if strings.EqualFold(host, "localhost") || strings.HasPrefix(host, "127.") || strings.HasPrefix(host, "10.") || strings.HasPrefix(host, "192.168.") {
+		return nil
+	}
+	return &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
 }
