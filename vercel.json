@@ -5,6 +5,15 @@
       "root": "."
     }
   },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": {
+        "type": "service",
+        "service": "backend"
+      }
+    }
+  ],
   "regions": ["sin1"],
   "build": {
     "env": {
