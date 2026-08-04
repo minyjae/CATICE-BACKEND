@@ -1,23 +1,16 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "services": {
-    "backend": {
-      "root": "."
-    }
-  },
-  "rewrites": [
+  "builds": [
     {
-      "source": "/(.*)",
-      "destination": {
-        "type": "service",
-        "service": "backend"
-      }
+      "src": "api/index.go",
+      "use": "@vercel/go"
     }
   ],
-  "regions": ["sin1"],
-  "build": {
-    "env": {
-      "GO_BUILD_FLAGS": "-trimpath -ldflags '-s -w'"
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/index.go"
     }
-  }
+  ],
+  "regions": ["sin1"]
 }
