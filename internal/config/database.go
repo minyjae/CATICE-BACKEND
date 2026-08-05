@@ -21,10 +21,7 @@ func NewGormDB(dsn string) (*gorm.DB, error) {
 	var db *gorm.DB
 	var err error
 	for range 10 {
-		db, err = gorm.Open(postgres.New(postgres.Config{
-			DSN:                  dsn,
-			PreferSimpleProtocol: true,
-		}), cfg)
+		db, err = gorm.Open(postgres.Open(dsn), cfg)
 		if err == nil {
 			if sqlDB, e := db.DB(); e == nil && sqlDB.Ping() == nil {
 				return db, nil // เชื่อมได้ + ping ผ่าน
